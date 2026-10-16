@@ -10,7 +10,7 @@ import os
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
 
-MODEL = "claude-opus-5-5"
+MODEL = "claude-sonnet-5-5"
 
 MEAL_SCHEMA = {
     "type": "object",
