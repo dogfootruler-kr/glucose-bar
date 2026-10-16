@@ -24,7 +24,7 @@ struct SummaryView: View {
             Divider()
             HStack {
                 if !store.aiAvailable {
-                    Text("Needs an Anthropic API key in the Keychain").font(.caption).foregroundStyle(.secondary)
+                    Text("Claude is unavailable: run `claude` once to log in").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if store.generatingSummary { ProgressView().controlSize(.small) }

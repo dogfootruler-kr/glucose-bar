@@ -372,7 +372,7 @@ async function load() {
     renderInsulin(await (await fetch('/events?hours=24')).json());
     draw(g.history, g.forecast, g.events || []);
     $('estimate').disabled = !g.aiAvailable;
-    $('estimate').title = g.aiAvailable ? '' : 'Needs an Anthropic API key on the Mac';
+    $('estimate').title = g.aiAvailable ? '' : 'Claude is unavailable on the Mac';
     const st = await (await fetch(`/stats?low=${LOW}&high=${HIGH}`)).json();
     statBlock('today', st.today); statBlock('week', st.week);
     meals = await (await fetch(`/meals?days=30&high=${HIGH}`)).json();

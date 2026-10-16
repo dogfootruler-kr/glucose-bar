@@ -19,7 +19,7 @@ If "password" is omitted it is read from the macOS Keychain
 (service "freestyle-bar", account = email). "lan": true listens on all interfaces
 so other devices at home can open the web page.
 Glucose features use the standard library only; meal estimates and weekly summaries
-need the anthropic package (installed in .venv by install.sh).
+use the Claude Agent SDK with your Claude subscription login (installed in .venv by install.sh).
 """
 import base64
 import hashlib
@@ -40,7 +40,7 @@ import insights
 
 try:
     import ai
-except ImportError:  # anthropic SDK not installed: AI features off
+except ImportError:  # claude-agent-sdk not installed: AI features off
     ai = None
 
 CONFIG_PATH = os.path.expanduser("~/.config/freestyle-bar/config.json")
@@ -174,7 +174,7 @@ summary_lock = threading.Lock()
 
 def generate_summary(low=70, high=180):
     if not ai:
-        raise RuntimeError("Install the anthropic package to enable summaries.")
+        raise RuntimeError("Install claude-agent-sdk to enable summaries.")
     with summary_lock:
         start, end, prev_start = insights.week_bounds(datetime.now())
         s, e, p = int(start.timestamp()), int(end.timestamp()), int(prev_start.timestamp())
@@ -433,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(add_event(self._body()), 201)
             elif path == "/meals/estimate":
                 if not ai:
-                    raise RuntimeError("Install the anthropic package to enable estimates.")
+                    raise RuntimeError("Install claude-agent-sdk to enable estimates.")
                 b = self._body()
                 self._json(ai.estimate_meal(b.get("photo"), b.get("mediaType") or "image/jpeg", b.get("text")))
             elif path == "/summary/generate":

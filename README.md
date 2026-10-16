@@ -15,8 +15,7 @@ Phone (Libre app) → LibreView cloud → LibreLinkUp API → `server/libre_serv
 - Meal impact: rise, time to peak, time above range and a 0-100 score per meal; ranking in Meals
 - Weekly summary written by Claude every Sunday from 19:00, or on demand
 
-Meal estimates and weekly summaries need an Anthropic API key in the Keychain:
-`security add-generic-password -U -s freestyle-bar-anthropic -a anthropic -w 'sk-ant-...'`
+Meal estimates and weekly summaries use the Claude Agent SDK, which runs on the Claude subscription you're logged into with `claude` (no API key).
 
 ## Setup
 1. Install **LibreLinkUp** on your phone and create a *separate* account (a follower account).

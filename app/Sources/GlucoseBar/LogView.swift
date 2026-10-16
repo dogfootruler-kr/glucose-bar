@@ -64,7 +64,7 @@ struct LogView: View {
                 }
                 .disabled(estimating || !store.aiAvailable || (photo == nil && note.isEmpty))
                 if !store.aiAvailable {
-                    Text("Add an Anthropic API key to enable").font(.caption).foregroundStyle(.secondary)
+                    Text("Claude is unavailable: run `claude` once to log in").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if let estimate {

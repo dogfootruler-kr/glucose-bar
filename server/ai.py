@@ -1,66 +1,77 @@
 """Claude calls: carb estimate from a meal photo, and the weekly summary.
 
-The API key comes from ANTHROPIC_API_KEY or the macOS Keychain (service "freestyle-bar-anthropic").
+Uses the Claude Agent SDK, which runs Claude Code under the hood and therefore uses the
+Claude subscription you're logged into with `claude` (no API key). Tools are disabled:
+these are single question-and-answer calls.
 """
+import asyncio
 import json
 import os
-import subprocess
-from typing import List, Literal, Optional
 
-import anthropic
-from pydantic import BaseModel
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
 
 MODEL = "claude-opus-5-5"
-FALLBACK = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+
+MEAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "description": {"type": "string"},
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}, "carbs": {"type": "number"}},
+                "required": ["name", "carbs"],
+                "additionalProperties": False,
+            },
+        },
+        "carbs": {"type": "number"},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "note": {"type": ["string", "null"]},
+    },
+    "required": ["description", "items", "carbs", "confidence", "note"],
+    "additionalProperties": False,
+}
 
 
-class MealItem(BaseModel):
-    name: str
-    carbs: float
+def _options(system_prompt, effort, output_format=None):
+    env = {"ANTHROPIC_API_KEY": ""}  # never fall back to an API key; use the subscription login
+    return ClaudeAgentOptions(
+        model=MODEL,
+        system_prompt=system_prompt,
+        tools=[],                 # no file, shell or web access
+        setting_sources=[],       # ignore user/project CLAUDE.md and settings
+        max_turns=2,
+        effort=effort,
+        output_format=output_format,
+        cwd=os.path.expanduser("~/Library/Application Support/freestyle-bar"),
+        env=env,
+    )
 
 
-class MealEstimate(BaseModel):
-    description: str
-    items: List[MealItem]
-    carbs: float
-    confidence: Literal["low", "medium", "high"]
-    note: Optional[str]
+async def _ask(content, options):
+    async def messages():
+        yield {"type": "user", "message": {"role": "user", "content": content}}
+
+    text, result = [], None
+    async for msg in query(prompt=messages(), options=options):
+        if isinstance(msg, AssistantMessage):
+            text += [b.text for b in msg.content if isinstance(b, TextBlock)]
+        elif isinstance(msg, ResultMessage):
+            result = msg
+    if result is None or result.is_error:
+        detail = (result.errors or [result.result]) if result else ["no result"]
+        raise RuntimeError(f"Claude request failed: {detail}")
+    return result, "".join(text).strip()
 
 
-class AIUnavailable(Exception):
-    pass
-
-
-_client = None
-
-
-def client():
-    global _client
-    if _client:
-        return _client
-    key = os.environ.get("ANTHROPIC_API_KEY") or subprocess.run(
-        ["security", "find-generic-password", "-s", "freestyle-bar-anthropic", "-w"],
-        capture_output=True, text=True,
-    ).stdout.strip()
-    if not key:
-        raise AIUnavailable("No Anthropic API key. Add one to the Keychain (service freestyle-bar-anthropic).")
-    _client = anthropic.Anthropic(api_key=key, timeout=120)
-    return _client
+def _run(coro):
+    # The HTTP server is threaded, so each call gets its own event loop.
+    return asyncio.run(coro)
 
 
 def available():
-    try:
-        client()
-        return True
-    except AIUnavailable:
-        return False
-
-
-def _check(response):
-    if response.stop_reason == "refusal":
-        raise RuntimeError("Claude declined this request.")
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError("Claude's answer was cut off.")
+    return True
 
 
 MEAL_PROMPT = """Estimate the carbohydrates in this meal for someone with diabetes who logs meals to understand their glucose response.
@@ -77,16 +88,12 @@ def estimate_meal(photo_b64=None, media_type="image/jpeg", text=None):
     if photo_b64:
         content.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": photo_b64}})
     content.append({"type": "text", "text": MEAL_PROMPT + (f"\n\nThe person's description: {text}" if text else "")})
-    response = client().beta.messages.parse(
-        model=MODEL,
-        max_tokens=8000,
-        output_config={"effort": "medium"},
-        messages=[{"role": "user", "content": content}],
-        output_format=MealEstimate,
-        **FALLBACK,
-    )
-    _check(response)
-    return response.parsed_output.model_dump()
+    options = _options("You estimate meal carbohydrates from photos and descriptions.", "medium",
+                       {"type": "json_schema", "schema": MEAL_SCHEMA})
+    result, text_out = _run(_ask(content, options))
+    if result.structured_output is not None:
+        return result.structured_output
+    return json.loads(text_out)
 
 
 SUMMARY_SYSTEM = """You write a short weekly glucose recap for one person with diabetes, from their CGM data.
@@ -99,17 +106,10 @@ Write Markdown, at most about 220 words:
 - "Worth trying": one practical, non-medical suggestion tied to a pattern (e.g. a walk after the meal that spikes most).
 
 Never suggest insulin doses, timing or changes to medication; if insulin data looks relevant, suggest discussing it with their care team.
-If data is sparse, say so briefly rather than inventing patterns. No preamble, no sign-off."""
+If data is sparse, say so briefly rather than inventing patterns. Reply with the recap only: no preamble, no sign-off."""
 
 
 def weekly_summary(digest):
-    response = client().beta.messages.create(
-        model=MODEL,
-        max_tokens=16000,
-        output_config={"effort": "high"},
-        system=SUMMARY_SYSTEM,
-        messages=[{"role": "user", "content": "This week's data (glucose in mg/dL, local times):\n\n" + json.dumps(digest, indent=1)}],
-        **FALLBACK,
-    )
-    _check(response)
-    return "".join(b.text for b in response.content if b.type == "text").strip()
+    content = [{"type": "text", "text": "This week's data (glucose in mg/dL, local times):\n\n" + json.dumps(digest, indent=1)}]
+    result, text = _run(_ask(content, _options(SUMMARY_SYSTEM, "high")))
+    return text or (result.result or "").strip()
