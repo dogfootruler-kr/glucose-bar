@@ -6,10 +6,11 @@
 <title>Glucose</title>
 <style>
   :root { --bg: #f6f7f9; --card: #fff; --fg: #15171c; --muted: #6b7280; --grid: #e5e7eb;
-          --line: #2563eb; --ok: #16a34a; --low: #dc2626; --high: #ea580c; --band: rgba(22,163,74,.10); }
+          --line: #2563eb; --ok: #16a34a; --low: #dc2626; --high: #ea580c; --band: rgba(22,163,74,.10);
+          --meal: #ea580c; --insulin: #9333ea; }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #0f1218; --card: #171b23; --fg: #e8eaf0; --muted: #8b93a3; --grid: #262c38;
-            --line: #7cb8ff; --band: rgba(74,222,128,.10); }
+            --line: #7cb8ff; --band: rgba(74,222,128,.10); --meal: #fb923c; --insulin: #c084fc; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 -apple-system, system-ui, sans-serif; }
@@ -19,6 +20,7 @@
   .value { font-size: 64px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; }
   .arrow { font-size: 40px; }
   .muted { color: var(--muted); }
+  .warn { color: var(--low); font-weight: 600; }
   .seg { display: flex; gap: 6px; margin-bottom: 10px; }
   .seg button { flex: 1; border: 0; border-radius: 8px; padding: 6px; background: var(--grid); color: var(--fg); font: inherit; cursor: pointer; }
   .seg button.on { background: var(--line); color: #fff; }
@@ -26,11 +28,32 @@
   svg { width: 100%; height: 220px; display: block; touch-action: pan-y; }
   .tip { position: absolute; top: 0; pointer-events: none; transform: translateX(-50%); white-space: nowrap;
          background: var(--card); border: 1px solid var(--grid); border-radius: 8px; padding: 4px 8px;
-         font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; }
+         font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; z-index: 2; }
   .tip b { font-variant-numeric: tabular-nums; }
   .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
   .stats b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+  label { display: block; margin: 10px 0 4px; font-size: 13px; color: var(--muted); }
+  input, select, textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--grid); border-radius: 8px; padding: 8px 10px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .btn { border: 0; border-radius: 8px; padding: 9px 14px; font: inherit; cursor: pointer; background: var(--grid); color: var(--fg); }
+  .btn.primary { background: var(--line); color: #fff; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .meal { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--grid); }
+  .meal:first-of-type { border-top: 0; }
+  .meal img, .meal .ph { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; flex: none; background: var(--grid); display: grid; place-items: center; }
+  .meal .info { flex: 1; min-width: 0; }
+  .meal .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .score { font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; text-align: right; }
+  .score small { display: block; font-size: 10px; font-weight: 400; color: var(--muted); }
+  .summary h3 { font-size: 15px; margin: 12px 0 4px; }
+  .summary ul { margin: 4px 0; padding-left: 20px; }
+  .summary p { margin: 6px 0; }
+  .preview { max-width: 100%; max-height: 180px; border-radius: 8px; margin-top: 8px; display: none; }
+  .small { font-size: 13px; }
+  .linkbtn { background: none; border: 0; color: var(--line); font: inherit; font-size: 13px; cursor: pointer; padding: 0; text-transform: none; letter-spacing: 0; }
 </style>
 </head>
 <body>
@@ -38,6 +61,8 @@
   <div class="card">
     <div class="now"><span class="value" id="value">–</span><span class="arrow" id="arrow"></span><span class="muted" id="delta"></span></div>
     <div class="muted" id="when">Loading…</div>
+    <div id="forecast" class="small"></div>
+    <div id="insulin" class="small muted"></div>
   </div>
   <div class="card">
     <div class="seg" id="seg"></div>
@@ -46,14 +71,62 @@
       <div class="tip" id="tip"></div>
     </div>
   </div>
+
+  <div class="card" id="log">
+    <h2>Log</h2>
+    <div class="seg" id="kind">
+      <button data-kind="meal" class="on">🍽 Meal</button>
+      <button data-kind="insulin">💉 Insulin</button>
+    </div>
+    <div id="mealForm">
+      <label for="photo">Photo</label>
+      <input type="file" id="photo" accept="image/*">
+      <img id="preview" class="preview" alt="">
+      <label for="mealNote">What did you eat?</label>
+      <input id="mealNote" placeholder="e.g. Kimchi jjigae with rice">
+      <div class="actions"><button class="btn" id="estimate">✨ Estimate carbs with Claude</button></div>
+      <div id="estimateResult" class="small muted"></div>
+      <label for="carbs">Carbs (g)</label>
+      <input id="carbs" type="number" inputmode="decimal" min="0">
+    </div>
+    <div id="insulinForm" style="display:none">
+      <div class="row">
+        <div><label for="units">Units</label><input id="units" type="number" inputmode="decimal" step="0.5" min="0" value="1"></div>
+        <div><label for="itype">Type</label><select id="itype"><option value="rapid">Rapid-acting</option><option value="long">Long-acting</option></select></div>
+      </div>
+      <label for="insNote">Note</label>
+      <input id="insNote" placeholder="Optional">
+    </div>
+    <label for="time">Time</label>
+    <input id="time" type="datetime-local">
+    <div class="actions"><button class="btn primary" id="save">Save</button><span id="saveMsg" class="small muted"></span></div>
+  </div>
+
+  <div class="card" id="meals">
+    <h2>Meals
+      <span><button class="linkbtn" data-sort="recent">Recent</button> · <button class="linkbtn" data-sort="best">Easiest</button> · <button class="linkbtn" data-sort="worst">Hardest</button></span>
+    </h2>
+    <div id="mealList" class="muted small">No meals logged yet.</div>
+  </div>
+
   <div class="card"><h2>Today</h2><div class="stats" id="today"></div></div>
   <div class="card"><h2>Last 7 days</h2><div class="stats" id="week"></div></div>
+
+  <div class="card" id="summary">
+    <h2>Weekly summary <button class="linkbtn" id="genSummary">Write now</button></h2>
+    <div id="summaryText" class="summary muted small">Loading…</div>
+  </div>
 </main>
 <script>
 const LOW = 70, HIGH = 180;
-let hours = 6;
-let plotted = [], scaleX = null, scaleY = null;
-const seg = document.getElementById('seg');
+let hours = 6, mealSort = 'recent', meals = [], aiAvailable = false;
+let plotted = [], plottedEvents = [], scaleX = null, scaleY = null;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
+const fmtTime = t => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const fmtU = u => Number.isInteger(u) ? u : u.toFixed(1);
+
+const seg = $('seg');
 [3, 6, 12, 24].forEach(h => {
   const b = document.createElement('button');
   b.textContent = h + 'h';
@@ -62,24 +135,40 @@ const seg = document.getElementById('seg');
 });
 
 function color(v) { return v < LOW ? 'var(--low)' : v > HIGH ? 'var(--high)' : 'var(--ok)'; }
+function eventLabel(e) {
+  return e.kind === 'meal'
+    ? `🍽 ${esc(e.note || 'Meal')}${e.carbs != null ? ` · ${Math.round(e.carbs)} g` : ''}`
+    : `💉 ${fmtU(e.units || 0)} u ${esc(e.insulinType || 'rapid')}`;
+}
 
-function draw(points) {
-  const svg = document.getElementById('chart');
+function draw(points, forecast, events) {
+  const svg = $('chart');
   const W = 600, H = 220, now = Date.now(), t0 = now - hours * 3600e3;
-  const max = Math.max(250, ...points.map(p => p.mgdl + 20)), min = 40;
-  const x = t => (t - t0) / (now - t0) * W, y = v => H - (v - min) / (max - min) * H;
+  const fpts = forecast ? forecast.points : [];
+  const t1 = fpts.length ? Date.parse(fpts[fpts.length - 1].timestamp) : now;
+  const max = Math.max(250, ...points.concat(fpts).map(p => p.mgdl + 30)), min = 40;
+  const x = t => (t - t0) / (t1 - t0) * W, y = v => H - (v - min) / (max - min) * H;
   let s = `<rect x="0" y="${y(HIGH)}" width="${W}" height="${y(LOW) - y(HIGH)}" fill="var(--band)"/>`;
   for (const v of [LOW, HIGH]) s += `<line x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" stroke-dasharray="4 4"/>`;
   const d = points.map((p, i) => `${i ? 'L' : 'M'}${x(Date.parse(p.timestamp)).toFixed(1)},${y(p.mgdl).toFixed(1)}`).join('');
   s += `<path d="${d}" fill="none" stroke="var(--line)" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
   const last = points[points.length - 1];
+  if (last && fpts.length) {
+    const fd = [last, ...fpts].map((p, i) => `${i ? 'L' : 'M'}${x(Date.parse(p.timestamp)).toFixed(1)},${y(p.mgdl).toFixed(1)}`).join('');
+    s += `<path d="${fd}" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>`;
+  }
   if (last) s += `<circle cx="${x(Date.parse(last.timestamp))}" cy="${y(last.mgdl)}" r="5" fill="${color(last.mgdl)}"/>`;
+  for (const e of events) {
+    const ex = x(Date.parse(e.timestamp));
+    s += `<line x1="${ex}" x2="${ex}" y1="14" y2="${H}" stroke="${e.kind === 'meal' ? 'var(--meal)' : 'var(--insulin)'}" stroke-opacity=".35" vector-effect="non-scaling-stroke"/>`;
+    s += `<circle cx="${ex}" cy="10" r="5" fill="${e.kind === 'meal' ? 'var(--meal)' : 'var(--insulin)'}"/>`;
+  }
   s += `<g id="hover" style="display:none"><line id="hl" y1="0" y2="${H}" stroke="var(--muted)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/><circle id="hc" r="5" stroke="var(--card)" stroke-width="2"/></g>`;
   svg.innerHTML = s;
-  plotted = points; scaleX = x; scaleY = y;
+  plotted = points; plottedEvents = events; scaleX = x; scaleY = y;
 }
 
-const svgEl = document.getElementById('chart'), tip = document.getElementById('tip');
+const svgEl = $('chart'), tip = $('tip');
 function hover(clientX) {
   if (!plotted.length) return;
   const box = svgEl.getBoundingClientRect();
@@ -90,32 +179,181 @@ function hover(clientX) {
     if (d < bestDist) { best = p; bestDist = d; }
   }
   const px = scaleX(Date.parse(best.timestamp)), py = scaleY(best.mgdl);
-  document.getElementById('hover').style.display = '';
-  const hl = document.getElementById('hl'), hc = document.getElementById('hc');
-  hl.setAttribute('x1', px); hl.setAttribute('x2', px);
-  hc.setAttribute('cx', px); hc.setAttribute('cy', py); hc.setAttribute('fill', color(best.mgdl));
-  const time = new Date(best.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  tip.innerHTML = `<b>${best.mgdl}</b> mg/dL · ${(best.mgdl / 18.0182).toFixed(1)} mmol/L<br><span class="muted">${time}</span>`;
+  $('hover').style.display = '';
+  $('hl').setAttribute('x1', px); $('hl').setAttribute('x2', px);
+  $('hc').setAttribute('cx', px); $('hc').setAttribute('cy', py); $('hc').setAttribute('fill', color(best.mgdl));
+  const near = plottedEvents.filter(e => Math.abs(scaleX(Date.parse(e.timestamp)) - vx) < 12);
+  tip.innerHTML = `<b>${best.mgdl}</b> mg/dL · ${(best.mgdl / 18.0182).toFixed(1)} mmol/L<br><span class="muted">${fmtTime(best.timestamp)}</span>`
+    + near.map(e => `<br>${eventLabel(e)} <span class="muted">${fmtTime(e.timestamp)}</span>`).join('');
   tip.style.display = 'block';
   const left = px / 600 * box.width, half = tip.offsetWidth / 2;
   tip.style.left = Math.min(Math.max(left, half), box.width - half) + 'px';
   tip.style.top = Math.max(py / 220 * box.height - tip.offsetHeight - 12, -tip.offsetHeight - 4) + 'px';
 }
-function unhover() {
-  tip.style.display = 'none';
-  const g = document.getElementById('hover'); if (g) g.style.display = 'none';
-}
+function unhover() { tip.style.display = 'none'; const g = $('hover'); if (g) g.style.display = 'none'; }
 svgEl.addEventListener('pointermove', e => hover(e.clientX));
 svgEl.addEventListener('pointerdown', e => hover(e.clientX));
 svgEl.addEventListener('pointerleave', unhover);
 
 function statBlock(id, s) {
-  document.getElementById(id).innerHTML = s
+  $(id).innerHTML = s
     ? `<div><b>${s.inRange}%</b><span class="muted">in range</span></div>
        <div><b>${s.average}</b><span class="muted">avg mg/dL</span></div>
        <div><b>${s.gmi}%</b><span class="muted">A1c est.</span></div>`
     : '<div class="muted">No data yet</div>';
 }
+
+function renderForecast(fc) {
+  const el = $('forecast');
+  el.className = 'small'; el.textContent = '';
+  if (!fc) return;
+  if (fc.slope < 0 && fc.from > LOW) {
+    const mins = (LOW - fc.from) / fc.slope;
+    if (mins <= 30) {
+      el.className = 'small warn';
+      el.textContent = `⚠ Heading low: ${LOW} around ${fmtTime(Date.parse(fc.fromTimestamp) + mins * 60e3)}`;
+      return;
+    }
+  }
+  const v = fc.points[fc.points.length - 1].mgdl;
+  if (Math.abs(fc.slope) >= 1) { el.className = 'small muted'; el.textContent = `About ${v} in 30 min if the trend continues`; }
+}
+
+function renderInsulin(events) {
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  let rapid = 0, long = 0;
+  for (const e of events) if (e.kind === 'insulin' && Date.parse(e.timestamp) >= start) (e.insulinType === 'long' ? (long += e.units || 0) : (rapid += e.units || 0));
+  $('insulin').textContent = rapid + long ? `💉 Today: ${fmtU(rapid)} u rapid · ${fmtU(long)} u long` : '';
+}
+
+function renderMeals() {
+  let list = meals.slice();
+  if (mealSort === 'recent') list.reverse();
+  else list = list.filter(m => m.impact).sort((a, b) => mealSort === 'best' ? b.impact.score - a.impact.score : a.impact.score - b.impact.score);
+  document.querySelectorAll('[data-sort]').forEach(b => b.style.fontWeight = b.dataset.sort === mealSort ? '700' : '400');
+  if (!list.length) { $('mealList').innerHTML = '<span class="muted small">No meals logged yet.</span>'; return; }
+  $('mealList').innerHTML = list.map(m => {
+    const i = m.impact;
+    const when = new Date(m.timestamp).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    const bits = [when, m.carbs != null ? `${Math.round(m.carbs)} g` : null,
+      i ? `+${i.rise} peak at ${i.minutesToPeak} min` : null,
+      i && i.minutesAboveHigh ? `${i.minutesAboveHigh} min above` : null].filter(Boolean).join(' · ');
+    const sc = i ? `<div class="score" style="color:${i.score >= 80 ? 'var(--ok)' : i.score >= 50 ? 'var(--high)' : 'var(--low)'}">${i.score}${i.complete ? '' : '<small>so far</small>'}</div>` : '<div class="score muted">–</div>';
+    const img = m.photo ? `<img src="${m.photo}" alt="" loading="lazy">` : '<div class="ph">🍽</div>';
+    return `<div class="meal">${img}<div class="info"><div class="name">${esc(m.note || 'Meal')}</div><div class="muted small">${bits}</div></div>${sc}</div>`;
+  }).join('');
+}
+document.querySelectorAll('[data-sort]').forEach(b => b.onclick = () => { mealSort = b.dataset.sort; renderMeals(); });
+
+function markdown(md) {
+  const out = []; let inList = false;
+  const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\*(.+?)\*/g, '<i>$1</i>');
+  for (const raw of md.split('\n')) {
+    const line = raw.trim();
+    const bullet = /^[-*] /.test(line);
+    if (inList && !bullet) { out.push('</ul>'); inList = false; }
+    if (line.startsWith('#')) out.push(`<h3>${inline(line.replace(/^#+\s*/, ''))}</h3>`);
+    else if (bullet) { if (!inList) { out.push('<ul>'); inList = true; } out.push(`<li>${inline(line.slice(2))}</li>`); }
+    else if (line) out.push(`<p>${inline(line)}</p>`);
+  }
+  if (inList) out.push('</ul>');
+  return out.join('');
+}
+
+async function loadSummary() {
+  const r = await (await fetch('/summary')).json();
+  aiAvailable = r.aiAvailable;
+  $('genSummary').style.display = aiAvailable ? '' : 'none';
+  const el = $('summaryText');
+  if (r.summary) {
+    el.className = 'summary';
+    el.innerHTML = `<div class="muted small">${new Date(r.summary.periodStart).toLocaleDateString()} – ${new Date(r.summary.periodEnd).toLocaleDateString()}</div>` + markdown(r.summary.text);
+  } else {
+    el.className = 'summary muted small';
+    el.textContent = 'A summary of the past 7 days is written every Sunday evening.';
+  }
+}
+$('genSummary').onclick = async () => {
+  $('genSummary').disabled = true; $('genSummary').textContent = 'Writing…';
+  try {
+    const r = await fetch(`/summary/generate?low=${LOW}&high=${HIGH}`, { method: 'POST' });
+    if (!r.ok) throw new Error((await r.json()).error);
+    await loadSummary();
+  } catch (e) { alert(e.message); }
+  $('genSummary').disabled = false; $('genSummary').textContent = 'Write now';
+};
+
+// --- logging ---
+let kind = 'meal', photoData = null, lastEstimate = null;
+function resetTime() {
+  const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  $('time').value = d.toISOString().slice(0, 16);
+}
+resetTime();
+document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => {
+  kind = b.dataset.kind;
+  document.querySelectorAll('[data-kind]').forEach(x => x.classList.toggle('on', x === b));
+  $('mealForm').style.display = kind === 'meal' ? '' : 'none';
+  $('insulinForm').style.display = kind === 'insulin' ? '' : 'none';
+});
+
+$('photo').onchange = () => {
+  const file = $('photo').files[0];
+  if (!file) { photoData = null; $('preview').style.display = 'none'; return; }
+  const img = new Image();
+  img.onload = () => {
+    const scale = Math.min(1, 1568 / Math.max(img.width, img.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    const url = c.toDataURL('image/jpeg', 0.85);
+    photoData = url.split(',')[1];
+    $('preview').src = url; $('preview').style.display = 'block';
+    URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(file);
+};
+
+$('estimate').onclick = async () => {
+  const text = $('mealNote').value.trim();
+  if (!photoData && !text) { $('estimateResult').textContent = 'Add a photo or a description first.'; return; }
+  $('estimate').disabled = true; $('estimateResult').textContent = 'Asking Claude…';
+  try {
+    const r = await fetch('/meals/estimate', { method: 'POST', body: JSON.stringify({ photo: photoData, mediaType: 'image/jpeg', text: text || null }) });
+    const est = await r.json();
+    if (!r.ok) throw new Error(est.error);
+    lastEstimate = est;
+    $('carbs').value = Math.round(est.carbs);
+    if (!text) $('mealNote').value = est.description;
+    $('estimateResult').innerHTML = est.items.map(i => `${esc(i.name)}: ${Math.round(i.carbs)} g`).join('<br>')
+      + `<br>Confidence: ${esc(est.confidence)}${est.note ? ' · ' + esc(est.note) : ''}`;
+  } catch (e) { $('estimateResult').textContent = e.message; }
+  $('estimate').disabled = false;
+};
+
+$('save').onclick = async () => {
+  const body = { kind, timestamp: new Date($('time').value).toISOString() };
+  if (kind === 'meal') {
+    Object.assign(body, { note: $('mealNote').value.trim() || null, carbs: $('carbs').value ? Number($('carbs').value) : null,
+                          photo: photoData, mediaType: 'image/jpeg', estimate: lastEstimate });
+    if (!body.note && body.carbs == null && !photoData) { $('saveMsg').textContent = 'Add a photo, description or carbs.'; return; }
+  } else {
+    Object.assign(body, { units: Number($('units').value), insulinType: $('itype').value, note: $('insNote').value.trim() || null });
+    if (!(body.units > 0)) { $('saveMsg').textContent = 'Enter the units.'; return; }
+  }
+  $('save').disabled = true;
+  try {
+    const r = await fetch('/events', { method: 'POST', body: JSON.stringify(body) });
+    if (!r.ok) throw new Error((await r.json()).error);
+    $('saveMsg').textContent = 'Saved ✓';
+    ['mealNote', 'carbs', 'insNote', 'photo'].forEach(id => $(id).value = '');
+    photoData = null; lastEstimate = null; $('preview').style.display = 'none'; $('estimateResult').textContent = '';
+    resetTime();
+    load();
+    setTimeout(() => $('saveMsg').textContent = '', 3000);
+  } catch (e) { $('saveMsg').textContent = e.message; }
+  $('save').disabled = false;
+};
 
 async function load() {
   [...seg.children].forEach(b => b.classList.toggle('on', b.textContent === hours + 'h'));
@@ -123,21 +361,28 @@ async function load() {
     const g = await (await fetch(`/glucose?hours=${hours}`)).json();
     const r = g.reading;
     if (r) {
-      const el = document.getElementById('value');
+      const el = $('value');
       el.textContent = r.mgdl; el.style.color = color(r.mgdl);
-      document.getElementById('arrow').textContent = r.arrow;
-      document.getElementById('delta').textContent = r.delta == null ? 'mg/dL' : `mg/dL  ${r.delta >= 0 ? '+' : ''}${r.delta}`;
+      $('arrow').textContent = r.arrow;
+      $('delta').textContent = r.delta == null ? 'mg/dL' : `mg/dL  ${r.delta >= 0 ? '+' : ''}${r.delta}`;
       const mins = Math.round((Date.now() - Date.parse(r.timestamp)) / 60000);
-      document.getElementById('when').textContent = (mins < 1 ? 'Just now' : `${mins} min ago`) + (g.error ? ` · ${g.error}` : '');
+      $('when').textContent = (mins < 1 ? 'Just now' : `${mins} min ago`) + (g.error ? ` · ${g.error}` : '');
     }
-    draw(g.history);
+    renderForecast(g.forecast);
+    renderInsulin(await (await fetch('/events?hours=24')).json());
+    draw(g.history, g.forecast, g.events || []);
+    $('estimate').disabled = !g.aiAvailable;
+    $('estimate').title = g.aiAvailable ? '' : 'Needs an Anthropic API key on the Mac';
     const st = await (await fetch(`/stats?low=${LOW}&high=${HIGH}`)).json();
     statBlock('today', st.today); statBlock('week', st.week);
+    meals = await (await fetch(`/meals?days=30&high=${HIGH}`)).json();
+    renderMeals();
   } catch (e) {
-    document.getElementById('when').textContent = 'Server unreachable';
+    $('when').textContent = 'Server unreachable';
   }
 }
 load();
+loadSummary();
 setInterval(load, 60000);
 </script>
 </body>

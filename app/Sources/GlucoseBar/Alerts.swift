@@ -4,7 +4,7 @@ import UserNotifications
 /// Posts macOS notifications for low/high/fast-drop/no-data, repeating every 20 minutes while a condition lasts.
 @MainActor
 final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
-    enum Condition: String, CaseIterable { case low, high, fastDrop, stale }
+    enum Condition: String, CaseIterable { case low, high, fastDrop, predictedLow, stale }
 
     @Published private(set) var snoozedUntil: Date?
     private var lastNotified: [Condition: Date] = [:]
@@ -38,7 +38,7 @@ final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDe
         defaults.removeObject(forKey: "snoozedUntil")
     }
 
-    func evaluate(reading: Reading?, stale: Bool, staleSince: Date) {
+    func evaluate(reading: Reading?, forecast: Forecast?, stale: Bool, staleSince: Date) {
         let mmol = defaults.bool(forKey: "useMmol")
         var active: [Condition: (String, String)] = [:]
         if stale {
@@ -54,6 +54,13 @@ final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDe
             if defaults.bool(forKey: "alertFastDrop"), [1, 2].contains(r.trend ?? 3), r.mgdl < 100, active[.low] == nil {
                 active[.fastDrop] = ("Dropping fast: \(value)", "Glucose is falling quickly.")
             }
+            if defaults.bool(forKey: "alertPredictedLow"), active[.low] == nil, active[.fastDrop] == nil,
+               let hit = forecast?.crossing(below: defaults.integer(forKey: "alertLow")),
+               hit.date.timeIntervalSinceNow <= 20 * 60 {
+                let mins = max(1, Int(hit.date.timeIntervalSinceNow / 60))
+                active[.predictedLow] = ("Heading low: \(value)",
+                                         "Projected to reach \(formatGlucose(hit.mgdl, mmol: mmol)) in about \(mins) min (\(hit.date.formatted(date: .omitted, time: .shortened))).")
+            }
         }
 
         for c in Condition.allCases where active[c] == nil { lastNotified[c] = nil }
@@ -68,7 +75,7 @@ final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDe
         post(id: "test", title: "Test alert", body: "Notifications from GlucoseBar are working.")
     }
 
-    private func post(id: String, title: String, body: String) {
+    func post(id: String, title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

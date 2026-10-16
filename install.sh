@@ -16,7 +16,17 @@ if [ ! -f "$CFG_DIR/config.json" ]; then
   chmod 600 "$CFG_DIR/config.json"
 fi
 
-# 2. Server as a launchd agent
+# Optional: Anthropic API key for meal carb estimates and weekly summaries
+if ! security find-generic-password -s freestyle-bar-anthropic >/dev/null 2>&1; then
+  read -rsp "Anthropic API key for meal estimates and weekly summaries (Enter to skip): " AKEY || AKEY=""; echo
+  if [ -n "$AKEY" ]; then security add-generic-password -U -s freestyle-bar-anthropic -a anthropic -w "$AKEY"; fi
+fi
+
+# 2. Server as a launchd agent (Python venv with the Anthropic SDK)
+if [ ! -x "$ROOT/.venv/bin/python" ]; then
+  python3 -m venv "$ROOT/.venv"
+fi
+"$ROOT/.venv/bin/pip" install -q --disable-pip-version-check anthropic pydantic
 mkdir -p "$HOME/Library/Logs"
 cat > "$PLIST" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
@@ -24,7 +34,7 @@ cat > "$PLIST" <<PL
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array>
-    <string>/usr/bin/python3</string><string>$ROOT/server/libre_server.py</string>
+    <string>$ROOT/.venv/bin/python</string><string>$ROOT/server/libre_server.py</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

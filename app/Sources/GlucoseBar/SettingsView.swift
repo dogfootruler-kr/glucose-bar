@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage("alertLow") private var alertLow = 70
     @AppStorage("alertHigh") private var alertHigh = 250
     @AppStorage("alertFastDrop") private var alertFastDrop = true
+    @AppStorage("alertPredictedLow") private var alertPredictedLow = true
     @AppStorage("staleMinutes") private var staleMinutes = 20
     @AppStorage("sensorDays") private var sensorDays = 14
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -56,6 +57,7 @@ struct SettingsView: View {
                     glucoseStepper("Low alert at or below", $alertLow, 40...150)
                     glucoseStepper("High alert at or above", $alertHigh, 150...400)
                     Toggle("Alert when dropping fast below \(store.format(100))", isOn: $alertFastDrop)
+                    Toggle("Alert when the trend will reach your low alert within 20 min", isOn: $alertPredictedLow)
                     Stepper("No-data alert after \(staleMinutes) min", value: $staleMinutes, in: 10...60, step: 5)
                 }
                 .disabled(!alertsEnabled)

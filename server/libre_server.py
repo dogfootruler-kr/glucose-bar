@@ -6,14 +6,22 @@ keeps every reading in a local SQLite database and serves it over HTTP.
   GET /glucose?hours=12       latest reading, delta, sensor info and history
   GET /stats?low=70&high=180  time in range, average and A1c estimate (today / 7 days)
   GET /export.csv             every stored reading
+  GET/POST /events            meals and insulin (POST {kind, ts?, carbs?, units?, insulinType?, note?, photo?})
+  DELETE /events/<id>
+  GET /photos/<id>            meal photo
+  POST /meals/estimate        {photo?, mediaType?, text?} -> Claude carb estimate
+  GET /meals?days=30&high=180 meals with their glucose impact
+  GET /summary, POST /summary/generate   weekly recap written by Claude
 
 Config: ~/.config/freestyle-bar/config.json
   {"email": "...", "lan": false}
 If "password" is omitted it is read from the macOS Keychain
 (service "freestyle-bar", account = email). "lan": true listens on all interfaces
 so other devices at home can open the web page.
-Standard library only.
+Glucose features use the standard library only; meal estimates and weekly summaries
+need the anthropic package (installed in .venv by install.sh).
 """
+import base64
 import hashlib
 import json
 import os
@@ -28,8 +36,17 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import insights
+
+try:
+    import ai
+except ImportError:  # anthropic SDK not installed: AI features off
+    ai = None
+
 CONFIG_PATH = os.path.expanduser("~/.config/freestyle-bar/config.json")
-DB_PATH = os.path.expanduser("~/Library/Application Support/freestyle-bar/glucose.db")
+DATA_DIR = os.path.expanduser("~/Library/Application Support/freestyle-bar")
+DB_PATH = os.path.join(DATA_DIR, "glucose.db")
+PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 WEB_PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web.html")
 PORT = int(os.environ.get("FREESTYLE_BAR_PORT", "8765"))
 POLL_SECONDS = 60
@@ -59,7 +76,14 @@ def load_config():
 
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE IF NOT EXISTS readings (ts INTEGER PRIMARY KEY, mgdl INTEGER NOT NULL, trend INTEGER)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL,
+        carbs REAL, units REAL, insulin_type TEXT, note TEXT, photo TEXT, estimate TEXT)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL,
+        period_start INTEGER NOT NULL, period_end INTEGER NOT NULL, text TEXT NOT NULL)""")
     return conn
 
 
@@ -68,9 +92,116 @@ def store(rows):
         conn.executemany("INSERT OR IGNORE INTO readings (ts, mgdl, trend) VALUES (?, ?, ?)", rows)
 
 
-def history(since_ts):
+def history(since_ts, until_ts=None):
     with db() as conn:
-        return conn.execute("SELECT ts, mgdl FROM readings WHERE ts >= ? ORDER BY ts", (since_ts,)).fetchall()
+        rows = conn.execute("SELECT ts, mgdl FROM readings WHERE ts >= ? AND ts <= ? ORDER BY ts",
+                            (since_ts, until_ts or 2 ** 40)).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+def event_json(r):
+    return {
+        "id": r["id"], "ts": r["ts"], "timestamp": iso(r["ts"]), "kind": r["kind"],
+        "carbs": r["carbs"], "units": r["units"], "insulinType": r["insulin_type"], "note": r["note"],
+        "photo": f"/photos/{r['id']}" if r["photo"] else None,
+        "estimate": json.loads(r["estimate"]) if r["estimate"] else None,
+    }
+
+
+def events(since_ts, kind=None):
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM events WHERE ts >= ? AND (? IS NULL OR kind = ?) ORDER BY ts",
+                            (since_ts, kind, kind)).fetchall()
+    return [event_json(r) for r in rows]
+
+
+def add_event(body):
+    kind = body.get("kind")
+    if kind not in ("meal", "insulin"):
+        raise ValueError("kind must be meal or insulin")
+    ts = int(datetime.fromisoformat(body["timestamp"].replace("Z", "+00:00")).timestamp()) if body.get("timestamp") else int(time.time())
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO events (ts, kind, carbs, units, insulin_type, note, estimate) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ts, kind, body.get("carbs"), body.get("units"), body.get("insulinType"), (body.get("note") or "").strip() or None,
+             json.dumps(body["estimate"]) if body.get("estimate") else None))
+        eid = cur.lastrowid
+        if body.get("photo"):
+            os.makedirs(PHOTO_DIR, exist_ok=True)
+            ext = {"image/png": "png", "image/webp": "webp", "image/gif": "gif"}.get(body.get("mediaType"), "jpg")
+            name = f"{eid}.{ext}"
+            with open(os.path.join(PHOTO_DIR, name), "wb") as f:
+                f.write(base64.b64decode(body["photo"]))
+            conn.execute("UPDATE events SET photo = ? WHERE id = ?", (name, eid))
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
+    return event_json(row)
+
+
+def delete_event(eid):
+    with db() as conn:
+        row = conn.execute("SELECT photo FROM events WHERE id = ?", (eid,)).fetchone()
+        conn.execute("DELETE FROM events WHERE id = ?", (eid,))
+    if row and row["photo"]:
+        try:
+            os.remove(os.path.join(PHOTO_DIR, row["photo"]))
+        except FileNotFoundError:
+            pass
+
+
+def meals_with_impact(since_ts, high):
+    now = time.time()
+    out = []
+    for m in events(since_ts, "meal"):
+        readings = history(m["ts"] - 15 * 60, m["ts"] + insights.MEAL_WINDOW)
+        m["impact"] = insights.meal_impact(m["ts"], readings, high, now)
+        out.append(m)
+    return out
+
+
+# --- weekly summary ------------------------------------------------------------
+
+def latest_summary():
+    with db() as conn:
+        r = conn.execute("SELECT * FROM summaries ORDER BY created DESC LIMIT 1").fetchone()
+    if not r:
+        return None
+    return {"id": r["id"], "created": iso(r["created"]), "periodStart": iso(r["period_start"]),
+            "periodEnd": iso(r["period_end"]), "text": r["text"]}
+
+
+summary_lock = threading.Lock()
+
+
+def generate_summary(low=70, high=180):
+    if not ai:
+        raise RuntimeError("Install the anthropic package to enable summaries.")
+    with summary_lock:
+        start, end, prev_start = insights.week_bounds(datetime.now())
+        s, e, p = int(start.timestamp()), int(end.timestamp()), int(prev_start.timestamp())
+        digest = insights.weekly_digest(history(s, e), history(p, s), events(s), meals_with_impact(s, high), low, high, s, e)
+        if not digest["week"]:
+            raise RuntimeError("No glucose data for the past week yet.")
+        text = ai.weekly_summary(digest)
+        with db() as conn:
+            conn.execute("INSERT INTO summaries (created, period_start, period_end, text) VALUES (?, ?, ?, ?)",
+                         (int(time.time()), s, e, text))
+        log("weekly summary generated")
+        return latest_summary()
+
+
+def summary_scheduler():
+    """Writes the weekly recap on Sunday from 19:00 local time, once per week."""
+    while True:
+        try:
+            now = datetime.now()
+            last = latest_summary()
+            last_created = datetime.fromisoformat(last["created"]).astimezone() if last else None
+            if now.weekday() == 6 and now.hour >= 19 and ai and ai.available() and (
+                    not last_created or last_created.date() != now.date()):
+                generate_summary()
+        except Exception as e:
+            log(f"summary error: {e}")
+        time.sleep(1800)
 
 
 def iso(ts):
@@ -219,8 +350,17 @@ def poll_loop(client):
 # --- HTTP --------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, body, ctype, extra=None):
-        self.send_response(200)
+    def _json(self, payload, status=200):
+        self._send(json.dumps(payload).encode(), "application/json", status=status)
+
+    def _body(self):
+        length = int(self.headers.get("content-length") or 0)
+        if length > 20 * 1024 * 1024:
+            raise ValueError("Request too large")
+        return json.loads(self.rfile.read(length) or b"{}")
+
+    def _send(self, body, ctype, extra=None, status=200):
+        self.send_response(status)
         self.send_header("content-type", ctype)
         self.send_header("content-length", str(len(body)))
         self.send_header("cache-control", "no-store")
@@ -241,8 +381,18 @@ class Handler(BaseHTTPRequestHandler):
             since = int(time.time() - hours * 3600)
             with lock:
                 payload = dict(state)
-            payload["history"] = [{"mgdl": m, "timestamp": iso(ts)} for ts, m in history(since)]
-            self._send(json.dumps(payload).encode(), "application/json")
+            rows = history(since)
+            payload["history"] = [{"mgdl": m, "timestamp": iso(ts)} for ts, m in rows]
+            fc = insights.forecast(history(int(time.time()) - 30 * 60))
+            if fc and fc["fromTs"] < time.time() - 10 * 60:
+                fc = None  # data too old to project
+            if fc:
+                fc["points"] = [{"mgdl": p["mgdl"], "timestamp": iso(p["ts"])} for p in fc["points"]]
+                fc["fromTimestamp"] = iso(fc.pop("fromTs"))
+            payload["forecast"] = fc
+            payload["events"] = events(since)
+            payload["aiAvailable"] = bool(ai and ai.available())
+            self._json(payload)
         elif path == "/stats":
             low, high = int(q.get("low", 70)), int(q.get("high", 180))
             midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -257,6 +407,48 @@ class Handler(BaseHTTPRequestHandler):
                 lines.append(f"{iso(ts)},{local},{m},{m / 18.0182:.1f}")
             self._send(("\n".join(lines) + "\n").encode(), "text/csv",
                        {"content-disposition": 'attachment; filename="glucose.csv"'})
+        elif path == "/events":
+            self._json(events(int(time.time() - float(q.get("hours", 24)) * 3600)))
+        elif path.startswith("/photos/"):
+            with db() as conn:
+                row = conn.execute("SELECT photo FROM events WHERE id = ?", (path.split("/")[-1],)).fetchone()
+            if not row or not row["photo"]:
+                return self.send_error(404)
+            ext = row["photo"].rsplit(".", 1)[-1]
+            with open(os.path.join(PHOTO_DIR, row["photo"]), "rb") as f:
+                self._send(f.read(), {"jpg": "image/jpeg"}.get(ext, f"image/{ext}"))
+        elif path == "/meals":
+            since = int(time.time() - float(q.get("days", 30)) * 86400)
+            self._json(meals_with_impact(since, int(q.get("high", 180))))
+        elif path == "/summary":
+            self._json({"summary": latest_summary(), "aiAvailable": bool(ai and ai.available())})
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        path = urlparse(self.path).path.rstrip("/")
+        q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+        try:
+            if path == "/events":
+                self._json(add_event(self._body()), 201)
+            elif path == "/meals/estimate":
+                if not ai:
+                    raise RuntimeError("Install the anthropic package to enable estimates.")
+                b = self._body()
+                self._json(ai.estimate_meal(b.get("photo"), b.get("mediaType") or "image/jpeg", b.get("text")))
+            elif path == "/summary/generate":
+                self._json(generate_summary(int(q.get("low", 70)), int(q.get("high", 180))))
+            else:
+                self.send_error(404)
+        except Exception as e:
+            log(f"{path} error: {e}")
+            self._json({"error": str(e)}, 400)
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path.rstrip("/")
+        if path.startswith("/events/") and path.split("/")[-1].isdigit():
+            delete_event(int(path.split("/")[-1]))
+            self._json({"ok": True})
         else:
             self.send_error(404)
 
@@ -273,6 +465,7 @@ def main():
     db().close()
     client = LibreLinkUp(cfg["email"], cfg["password"], cfg.get("baseUrl"), cfg.get("version", "4.16.0"))
     threading.Thread(target=poll_loop, args=(client,), daemon=True).start()
+    threading.Thread(target=summary_scheduler, daemon=True).start()
     host = "0.0.0.0" if cfg.get("lan") else "127.0.0.1"
     log(f"serving on http://{host}:{PORT}/")
     ThreadingHTTPServer((host, PORT), Handler).serve_forever()

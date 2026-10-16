@@ -10,6 +10,13 @@ Phone (Libre app) → LibreView cloud → LibreLinkUp API → `server/libre_serv
 - Alerts: low, high, fast drop below 100 mg/dL, no data for N minutes; snooze 30 min from the notification or the menu
 - Server: keeps every reading in `~/Library/Application Support/freestyle-bar/glucose.db`, CSV export, web page at `http://localhost:8765` (optionally shared on the local network)
 - Settings window: units, target range, alert thresholds, menu bar display, open at login
+- Forecast: 30-minute projection from the last 20 minutes (dotted line), with a "heading low" alert up to 20 minutes ahead
+- Meal and insulin log (popup `+` button or the web page, including from a phone camera); Claude estimates carbs from a photo
+- Meal impact: rise, time to peak, time above range and a 0-100 score per meal; ranking in Meals
+- Weekly summary written by Claude every Sunday from 19:00, or on demand
+
+Meal estimates and weekly summaries need an Anthropic API key in the Keychain:
+`security add-generic-password -U -s freestyle-bar-anthropic -a anthropic -w 'sk-ant-...'`
 
 ## Setup
 1. Install **LibreLinkUp** on your phone and create a *separate* account (a follower account).
@@ -25,3 +32,7 @@ Logs: `~/Library/Logs/freestyle-bar.log`
 | `/glucose?hours=12` | latest reading, delta, sensor, history |
 | `/stats?low=70&high=180` | today / 7-day stats |
 | `/export.csv` | all stored readings |
+| `/events` | GET / POST meals and insulin; `DELETE /events/<id>` |
+| `/meals?days=30` | meals with glucose impact |
+| `/meals/estimate` | POST photo/text, returns a carb estimate |
+| `/summary`, `/summary/generate` | weekly summary |

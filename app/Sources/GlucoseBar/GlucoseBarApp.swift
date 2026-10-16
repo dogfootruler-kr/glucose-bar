@@ -12,6 +12,19 @@ struct GlucoseBarApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        Window("Log meal or insulin", id: "log") {
+            LogView(store: store)
+        }
+        .windowResizability(.contentSize)
+
+        Window("Meals", id: "meals") {
+            MealsView(store: store)
+        }
+
+        Window("Weekly Summary", id: "summary") {
+            SummaryView(store: store)
+        }
+
         Settings {
             SettingsView(store: store)
         }
