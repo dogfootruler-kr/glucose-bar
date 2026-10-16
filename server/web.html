@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glucose</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --fg: #15171c; --muted: #6b7280; --grid: #e5e7eb;
+          --line: #2563eb; --ok: #16a34a; --low: #dc2626; --high: #ea580c; --band: rgba(22,163,74,.10); }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1218; --card: #171b23; --fg: #e8eaf0; --muted: #8b93a3; --grid: #262c38;
+            --line: #7cb8ff; --band: rgba(74,222,128,.10); }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px; }
+  .card { background: var(--card); border-radius: 14px; padding: 18px; margin-bottom: 14px; }
+  .now { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .value { font-size: 64px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; }
+  .arrow { font-size: 40px; }
+  .muted { color: var(--muted); }
+  .seg { display: flex; gap: 6px; margin-bottom: 10px; }
+  .seg button { flex: 1; border: 0; border-radius: 8px; padding: 6px; background: var(--grid); color: var(--fg); font: inherit; cursor: pointer; }
+  .seg button.on { background: var(--line); color: #fff; }
+  svg { width: 100%; height: 220px; display: block; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+  .stats b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <div class="now"><span class="value" id="value">–</span><span class="arrow" id="arrow"></span><span class="muted" id="delta"></span></div>
+    <div class="muted" id="when">Loading…</div>
+  </div>
+  <div class="card">
+    <div class="seg" id="seg"></div>
+    <svg id="chart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+  </div>
+  <div class="card"><h2>Today</h2><div class="stats" id="today"></div></div>
+  <div class="card"><h2>Last 7 days</h2><div class="stats" id="week"></div></div>
+</main>
+<script>
+const LOW = 70, HIGH = 180;
+let hours = 6;
+const seg = document.getElementById('seg');
+[3, 6, 12, 24].forEach(h => {
+  const b = document.createElement('button');
+  b.textContent = h + 'h';
+  b.onclick = () => { hours = h; load(); };
+  seg.appendChild(b);
+});
+
+function color(v) { return v < LOW ? 'var(--low)' : v > HIGH ? 'var(--high)' : 'var(--ok)'; }
+
+function draw(points) {
+  const svg = document.getElementById('chart');
+  const W = 600, H = 220, now = Date.now(), t0 = now - hours * 3600e3;
+  const max = Math.max(250, ...points.map(p => p.mgdl + 20)), min = 40;
+  const x = t => (t - t0) / (now - t0) * W, y = v => H - (v - min) / (max - min) * H;
+  let s = `<rect x="0" y="${y(HIGH)}" width="${W}" height="${y(LOW) - y(HIGH)}" fill="var(--band)"/>`;
+  for (const v of [LOW, HIGH]) s += `<line x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" stroke-dasharray="4 4"/>`;
+  const d = points.map((p, i) => `${i ? 'L' : 'M'}${x(Date.parse(p.timestamp)).toFixed(1)},${y(p.mgdl).toFixed(1)}`).join('');
+  s += `<path d="${d}" fill="none" stroke="var(--line)" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+  const last = points[points.length - 1];
+  if (last) s += `<circle cx="${x(Date.parse(last.timestamp))}" cy="${y(last.mgdl)}" r="5" fill="${color(last.mgdl)}"/>`;
+  svg.innerHTML = s;
+}
+
+function statBlock(id, s) {
+  document.getElementById(id).innerHTML = s
+    ? `<div><b>${s.inRange}%</b><span class="muted">in range</span></div>
+       <div><b>${s.average}</b><span class="muted">avg mg/dL</span></div>
+       <div><b>${s.gmi}%</b><span class="muted">A1c est.</span></div>`
+    : '<div class="muted">No data yet</div>';
+}
+
+async function load() {
+  [...seg.children].forEach(b => b.classList.toggle('on', b.textContent === hours + 'h'));
+  try {
+    const g = await (await fetch(`/glucose?hours=${hours}`)).json();
+    const r = g.reading;
+    if (r) {
+      const el = document.getElementById('value');
+      el.textContent = r.mgdl; el.style.color = color(r.mgdl);
+      document.getElementById('arrow').textContent = r.arrow;
+      document.getElementById('delta').textContent = r.delta == null ? 'mg/dL' : `mg/dL  ${r.delta >= 0 ? '+' : ''}${r.delta}`;
+      const mins = Math.round((Date.now() - Date.parse(r.timestamp)) / 60000);
+      document.getElementById('when').textContent = (mins < 1 ? 'Just now' : `${mins} min ago`) + (g.error ? ` · ${g.error}` : '');
+    }
+    draw(g.history);
+    const st = await (await fetch(`/stats?low=${LOW}&high=${HIGH}`)).json();
+    statBlock('today', st.today); statBlock('week', st.week);
+  } catch (e) {
+    document.getElementById('when').textContent = 'Server unreachable';
+  }
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
