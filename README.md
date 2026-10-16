@@ -24,6 +24,16 @@ Meal estimates and weekly summaries use the Claude Agent SDK, which runs on the 
 
 Logs: `~/Library/Logs/freestyle-bar.log`
 
+## Other computers (Tailscale)
+One Mac runs the server; other computers read from it over [Tailscale](https://tailscale.com), so nothing is exposed to the internet or the local network and there's one shared history and meal log.
+
+- **Server Mac**: `brew install tailscale`, then run `tailscaled --tun=userspace-networking` as a launchd agent (no admin rights needed) and `tailscale up --hostname=glucose-work`. Inbound tailnet connections reach `127.0.0.1:8765`, so `"lan"` can stay `false`.
+- **Other Mac**: install Tailscale, log in with the same account, then `./install.sh --remote http://glucose-work:8765` (app only). The address can also be changed in Settings → Server.
+- **Windows**: install Tailscale, log in, then double-click `windows/install.cmd`. GlucoseTray shows the value in the system tray (colour by range), the trend in the tooltip, low/high/no-data notifications, and opens the web page on click. Settings: `%APPDATA%\GlucoseTray\config.json`.
+- **Any browser or phone** on the tailnet: `http://glucose-work:8765`.
+
+If the short name doesn't resolve, use the full MagicDNS name (`glucose-work.<tailnet>.ts.net`) or the `100.x` address from `tailscale ip`.
+
 ## Server API
 | Path | |
 |---|---|

@@ -19,6 +19,7 @@ struct SettingsView: View {
     @AppStorage("sensorDays") private var sensorDays = 14
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var shareOnLAN = ServerConfig.lan
+    @AppStorage("serverURL") private var serverURL = ""
 
     var body: some View {
         TabView {
@@ -66,20 +67,26 @@ struct SettingsView: View {
             .tabItem { Label("Alerts", systemImage: "bell") }
 
             Form {
-                Toggle("Share web page on local network", isOn: $shareOnLAN)
-                    .onChange(of: shareOnLAN) { _, on in ServerConfig.setLAN(on) }
-                Text(shareOnLAN
-                     ? "Anyone on your Wi-Fi can open http://\(ProcessInfo.processInfo.hostName):8765 and see your glucose."
-                     : "The web page is only reachable on this Mac: http://localhost:8765")
+                TextField("Server address", text: $serverURL, prompt: Text(GlucoseStore.localServer))
+                    .onSubmit { Task { await store.refresh() } }
+                Text("Leave empty to use the server on this Mac, or enter another Mac's address, such as http://glucose-work.<tailnet>.ts.net:8765")
                     .font(.caption).foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                if !GlucoseStore.isRemote {
+                    Toggle("Share web page on local network", isOn: $shareOnLAN)
+                        .onChange(of: shareOnLAN) { _, on in ServerConfig.setLAN(on) }
+                    Text(shareOnLAN
+                         ? "Anyone on your Wi-Fi can open http://\(ProcessInfo.processInfo.hostName):8765 and see your glucose."
+                         : "The web page is only reachable on this Mac: http://localhost:8765")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
                 Button("Open web page") { store.openWebPage() }
                 Button("Export all readings as CSV…") { store.exportCSV() }
             }
             .tabItem { Label("Server", systemImage: "server.rack") }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 300)
+        .frame(width: 440, height: 340)
     }
 
     private func glucoseStepper(_ label: String, _ value: Binding<Int>, _ range: ClosedRange<Int>) -> some View {

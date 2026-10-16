@@ -3,7 +3,15 @@ import SwiftUI
 
 @MainActor
 final class GlucoseStore: ObservableObject {
-    static let server = URL(string: "http://127.0.0.1:8765")!
+    static let localServer = "http://127.0.0.1:8765"
+
+    /// The server this app reads from: the local one, or another Mac's over Tailscale.
+    static var server: URL {
+        let text = UserDefaults.standard.string(forKey: "serverURL")?.trimmingCharacters(in: .whitespaces) ?? ""
+        return URL(string: text.isEmpty ? localServer : text) ?? URL(string: localServer)!
+    }
+
+    static var isRemote: Bool { !["127.0.0.1", "localhost"].contains(server.host() ?? "") }
 
     @Published var state: ServerState?
     @Published var stats: StatsResponse?
