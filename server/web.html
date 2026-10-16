@@ -22,7 +22,12 @@
   .seg { display: flex; gap: 6px; margin-bottom: 10px; }
   .seg button { flex: 1; border: 0; border-radius: 8px; padding: 6px; background: var(--grid); color: var(--fg); font: inherit; cursor: pointer; }
   .seg button.on { background: var(--line); color: #fff; }
-  svg { width: 100%; height: 220px; display: block; }
+  .plot { position: relative; }
+  svg { width: 100%; height: 220px; display: block; touch-action: pan-y; }
+  .tip { position: absolute; top: 0; pointer-events: none; transform: translateX(-50%); white-space: nowrap;
+         background: var(--card); border: 1px solid var(--grid); border-radius: 8px; padding: 4px 8px;
+         font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; }
+  .tip b { font-variant-numeric: tabular-nums; }
   .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
   .stats b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
@@ -36,7 +41,10 @@
   </div>
   <div class="card">
     <div class="seg" id="seg"></div>
-    <svg id="chart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+    <div class="plot">
+      <svg id="chart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+      <div class="tip" id="tip"></div>
+    </div>
   </div>
   <div class="card"><h2>Today</h2><div class="stats" id="today"></div></div>
   <div class="card"><h2>Last 7 days</h2><div class="stats" id="week"></div></div>
@@ -44,6 +52,7 @@
 <script>
 const LOW = 70, HIGH = 180;
 let hours = 6;
+let plotted = [], scaleX = null, scaleY = null;
 const seg = document.getElementById('seg');
 [3, 6, 12, 24].forEach(h => {
   const b = document.createElement('button');
@@ -65,8 +74,40 @@ function draw(points) {
   s += `<path d="${d}" fill="none" stroke="var(--line)" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
   const last = points[points.length - 1];
   if (last) s += `<circle cx="${x(Date.parse(last.timestamp))}" cy="${y(last.mgdl)}" r="5" fill="${color(last.mgdl)}"/>`;
+  s += `<g id="hover" style="display:none"><line id="hl" y1="0" y2="${H}" stroke="var(--muted)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/><circle id="hc" r="5" stroke="var(--card)" stroke-width="2"/></g>`;
   svg.innerHTML = s;
+  plotted = points; scaleX = x; scaleY = y;
 }
+
+const svgEl = document.getElementById('chart'), tip = document.getElementById('tip');
+function hover(clientX) {
+  if (!plotted.length) return;
+  const box = svgEl.getBoundingClientRect();
+  const vx = (clientX - box.left) / box.width * 600;
+  let best = plotted[0], bestDist = Infinity;
+  for (const p of plotted) {
+    const d = Math.abs(scaleX(Date.parse(p.timestamp)) - vx);
+    if (d < bestDist) { best = p; bestDist = d; }
+  }
+  const px = scaleX(Date.parse(best.timestamp)), py = scaleY(best.mgdl);
+  document.getElementById('hover').style.display = '';
+  const hl = document.getElementById('hl'), hc = document.getElementById('hc');
+  hl.setAttribute('x1', px); hl.setAttribute('x2', px);
+  hc.setAttribute('cx', px); hc.setAttribute('cy', py); hc.setAttribute('fill', color(best.mgdl));
+  const time = new Date(best.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  tip.innerHTML = `<b>${best.mgdl}</b> mg/dL · ${(best.mgdl / 18.0182).toFixed(1)} mmol/L<br><span class="muted">${time}</span>`;
+  tip.style.display = 'block';
+  const left = px / 600 * box.width, half = tip.offsetWidth / 2;
+  tip.style.left = Math.min(Math.max(left, half), box.width - half) + 'px';
+  tip.style.top = Math.max(py / 220 * box.height - tip.offsetHeight - 12, -tip.offsetHeight - 4) + 'px';
+}
+function unhover() {
+  tip.style.display = 'none';
+  const g = document.getElementById('hover'); if (g) g.style.display = 'none';
+}
+svgEl.addEventListener('pointermove', e => hover(e.clientX));
+svgEl.addEventListener('pointerdown', e => hover(e.clientX));
+svgEl.addEventListener('pointerleave', unhover);
 
 function statBlock(id, s) {
   document.getElementById(id).innerHTML = s

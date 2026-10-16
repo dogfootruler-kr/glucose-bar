@@ -8,6 +8,7 @@ struct MenuContent: View {
     @AppStorage("useMmol") private var useMmol = false
     @AppStorage("targetLow") private var targetLow = 70
     @AppStorage("targetHigh") private var targetHigh = 180
+    @State private var hovered: Point?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -64,6 +65,35 @@ struct MenuContent: View {
                     LineMark(x: .value("Time", p.timestamp), y: .value("Glucose", p.mgdl))
                         .interpolationMethod(.monotone)
                 }
+                if let h = hovered {
+                    RuleMark(x: .value("Time", h.timestamp))
+                        .foregroundStyle(.secondary.opacity(0.5))
+                        .annotation(position: .top, spacing: 2, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                            VStack(spacing: 0) {
+                                Text("\(store.format(h.mgdl)) \(useMmol ? "mmol/L" : "mg/dL")").font(.caption.bold()).monospacedDigit()
+                                Text(h.timestamp.formatted(date: .omitted, time: .shortened)).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(.background, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(.separator))
+                        }
+                    PointMark(x: .value("Time", h.timestamp), y: .value("Glucose", h.mgdl))
+                        .symbolSize(40)
+                        .foregroundStyle(color(for: h.mgdl))
+                }
+            }
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            guard case .active(let location) = phase, let frame = proxy.plotFrame,
+                                  let date: Date = proxy.value(atX: location.x - geo[frame].origin.x) else {
+                                hovered = nil
+                                return
+                            }
+                            hovered = points.min { abs($0.timestamp.timeIntervalSince(date)) < abs($1.timestamp.timeIntervalSince(date)) }
+                        }
+                }
             }
             .chartXScale(domain: Date().addingTimeInterval(-Double(chartHours) * 3600)...Date())
             .chartYScale(domain: 40...maxValue)
@@ -78,6 +108,10 @@ struct MenuContent: View {
                 Text("History builds up from the first time the server ran.").font(.caption2).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func color(for mgdl: Int) -> Color {
+        mgdl < targetLow ? .red : mgdl > targetHigh ? .orange : .green
     }
 
     private var statsGrid: some View {
