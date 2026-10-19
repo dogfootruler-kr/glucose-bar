@@ -30,6 +30,7 @@ struct MenuContent: View {
             menu.padding(.horizontal, 5).padding(.bottom, 5)
         }
         .frame(width: 340)
+        .background(WindowReader { PopupFitter.track($0) })
     }
 
     // MARK: reading

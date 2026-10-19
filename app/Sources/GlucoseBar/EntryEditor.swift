@@ -6,9 +6,11 @@ struct EntryEditor: View {
     @ObservedObject var store: GlucoseStore
     let existing: GlucoseEvent?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.controlActiveState) private var activeState
 
     @State private var kind: String
     @State private var time: Date
+    @State private var timeEdited = false
     @State private var note: String
     // meal
     @State private var photo: NSImage?
@@ -55,19 +57,9 @@ struct EntryEditor: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                if existing == nil {
-                    Picker("Entry", selection: $kind) {
-                        Label("Meal", systemImage: "fork.knife").tag("meal")
-                        Label("Insulin", systemImage: "syringe").tag("insulin")
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
-                }
                 if isMeal { mealSections } else { insulinSection }
                 Section {
-                    DatePicker("Time", selection: $time, in: ...Date().addingTimeInterval(3600))
+                    DatePicker("Time", selection: Binding { time } set: { time = $0; timeEdited = true }, in: ...Date().addingTimeInterval(3600))
                 }
                 if isMeal && existing == nil { doseSection }
                 if let error {
@@ -82,7 +74,7 @@ struct EntryEditor: View {
                     Button("Delete…", role: .destructive) { confirmDelete = true }
                 }
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { timeEdited = false; dismiss() }.keyboardShortcut(.cancelAction)
                 Button(existing == nil ? "Add" : "Save") { Task { await save() } }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canSave)
@@ -101,7 +93,21 @@ struct EntryEditor: View {
         } message: {
             Text("This can't be undone.")
         }
-        .onAppear { if existing == nil { time = Date() } }
+        .toolbar {
+            if existing == nil {
+                ToolbarItem(placement: .principal) {
+                    Picker("Entry", selection: $kind) {
+                        Text("Meal").tag("meal")
+                        Text("Insulin").tag("insulin")
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+        }
+        // The window keeps its state between uses, so a new entry starts at the current time each
+        // time it comes forward unless the time was picked by hand.
+        .onAppear { refreshTime() }
+        .onChange(of: activeState) { if activeState == .key { refreshTime() } }
         .task(id: suggestsDose ? carbs ?? 0 : -1) { await loadSuggestion() }
     }
 
@@ -315,8 +321,12 @@ struct EntryEditor: View {
         return c
     }
 
+    private func refreshTime() {
+        if existing == nil && !timeEdited { time = Date() }
+    }
+
     private func reset() {
-        note = ""; photo = nil; carbs = nil; estimate = nil; units = 1; time = Date()
+        note = ""; photo = nil; carbs = nil; estimate = nil; units = 1; time = Date(); timeEdited = false
         suggestion = nil; logDose = false; doseEdited = false
     }
 }
