@@ -6,7 +6,8 @@ import SwiftUI
 struct MenuContent: View {
     @ObservedObject var store: GlucoseStore
     @ObservedObject var alerts: AlertManager
-    @Environment(\.windowOpener) private var open
+    @Environment(\.windowOpener) private var opener
+    @Environment(\.dismiss) private var dismiss
     @AppStorage("chartHours") private var chartHours = 12
     @AppStorage("useMmol") private var useMmol = false
     @AppStorage("alertLow") private var alertLow = 70
@@ -115,7 +116,7 @@ struct MenuContent: View {
                 Text("Recent Meals").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 ForEach(Array(recent)) { meal in
                     if let entry = store.entry(meal.id) {
-                        Button { open.edit(meal.id) } label: {
+                        Button { opener.edit(meal.id); dismiss() } label: {
                             EntryRow(store: store, entry: entry, meal: meal, compact: true).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -124,6 +125,12 @@ struct MenuContent: View {
                 }
             }
         }
+    }
+
+    /// Opens one of the app's windows and closes the popup.
+    private func open(_ id: String) {
+        opener(id)
+        dismiss()
     }
 
     // MARK: menu
@@ -143,8 +150,8 @@ struct MenuContent: View {
             } else {
                 MenuRow("Snooze Alerts for 30 Minutes", symbol: "bell.slash") { alerts.snooze() }
             }
-            MenuRow("Open Web Page", symbol: "safari") { store.openWebPage() }
-            MenuRow("Export CSV…", symbol: "square.and.arrow.up") { store.exportCSV() }
+            MenuRow("Open Web Page", symbol: "safari") { dismiss(); store.openWebPage() }
+            MenuRow("Export CSV…", symbol: "square.and.arrow.up") { dismiss(); store.exportCSV() }
             Divider().padding(.horizontal, 9).padding(.vertical, 4)
             MenuRow("Settings…", symbol: "gearshape") { open("settings") }
             MenuRow("Quit GlucoseBar", symbol: "power") { NSApplication.shared.terminate(nil) }

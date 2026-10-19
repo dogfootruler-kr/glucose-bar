@@ -109,6 +109,7 @@ struct EntryEditor: View {
 
     @ViewBuilder private var mealSections: some View {
         Section {
+            if existing == nil, !store.previousMeals.isEmpty { previousMealPicker }
             PhotoWell(image: $photo, existing: keepsPhoto ? existing?.photo : nil) { keepsPhoto = false }
             TextField("Description", text: $note, prompt: Text("e.g. Kimchi jjigae with rice"))
             LabeledContent("Carbs") {
@@ -151,6 +152,20 @@ struct EntryEditor: View {
             } else {
                 Text("Uses the photo and description.")
             }
+        }
+    }
+
+    private var previousMealPicker: some View {
+        Menu {
+            ForEach(store.previousMeals.prefix(25)) { meal in
+                Button { usePrevious(meal) } label: {
+                    Text(meal.note ?? "Meal")
+                    Text(([meal.carbs.map { "\(Int($0)) g carbs" }]
+                          + [meal.timestamp.formatted(.relative(presentation: .named))]).compactMap { $0 }.joined(separator: " · "))
+                }
+            }
+        } label: {
+            Label("Same as a Previous Meal", systemImage: "clock.arrow.circlepath")
         }
     }
 
@@ -215,6 +230,20 @@ struct EntryEditor: View {
         } catch {
             suggestion = nil
             suggestionError = error.localizedDescription
+        }
+    }
+
+    /// Fills in a previous meal's description, carbs, estimate and photo; the time stays now.
+    private func usePrevious(_ meal: GlucoseEvent) {
+        note = meal.note ?? ""
+        carbs = meal.carbs
+        estimate = meal.estimate
+        photo = nil
+        error = nil
+        guard let path = meal.photo else { return }
+        Task {
+            let image = await store.photo(path)
+            if note == meal.note, photo == nil { photo = image }
         }
     }
 

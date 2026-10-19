@@ -157,6 +157,22 @@ final class GlucoseStore: ObservableObject {
     }
 
     func entry(_ id: Int) -> GlucoseEvent? { entries.first { $0.id == id } }
+
+    /// Meals from the last 30 days to log again, newest first, one per description.
+    var previousMeals: [GlucoseEvent] {
+        var seen = Set<String>()
+        return entries.reversed().filter { e in
+            guard e.isMeal, let note = e.note?.trimmingCharacters(in: .whitespaces), !note.isEmpty else { return false }
+            return seen.insert(note.lowercased()).inserted
+        }
+    }
+
+    /// A photo saved with an entry (its server path).
+    func photo(_ path: String) async -> NSImage? {
+        guard let url = URL(string: path, relativeTo: Self.server),
+              let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+        return NSImage(data: data)
+    }
     func meal(_ id: Int) -> Meal? { meals.first { $0.id == id } }
 
     func doseSuggestion(carbs: Double) async throws -> DoseSuggestion {
