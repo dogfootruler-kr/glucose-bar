@@ -103,6 +103,9 @@ Write Markdown, at most about 220 words:
 - A one-line headline about the week (with time in range, compared with the previous week when available).
 - "Patterns": 3 to 5 bullets naming concrete patterns: times of day, weekdays, recurring lows or highs, overnight trends.
 - "Meals": 1 or 2 bullets on which logged meals were easiest and hardest on their glucose, if any were logged.
+  foodScore reflects the first 90 minutes (mostly the food); doseVerdict says whether the rapid insulin brought
+  glucose back (ok / tooLittle / tooMuch). When a meal's foodScore is good but the dose was off, say the food
+  itself looked fine and the dose was the issue, rather than blaming the food.
 - "Worth trying": one practical, non-medical suggestion tied to a pattern (e.g. a walk after the meal that spikes most).
 
 Never suggest insulin doses, timing or changes to medication; if insulin data looks relevant, suggest discussing it with their care team.

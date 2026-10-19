@@ -1,63 +1,69 @@
 import Charts
 import SwiftUI
 
+/// The menu bar popup, laid out like a Control Center module: reading, chart, stats, recent
+/// meals, then menu-style rows.
 struct MenuContent: View {
     @ObservedObject var store: GlucoseStore
     @ObservedObject var alerts: AlertManager
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.windowOpener) private var open
     @AppStorage("chartHours") private var chartHours = 12
     @AppStorage("useMmol") private var useMmol = false
     @AppStorage("alertLow") private var alertLow = 70
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            current
-            GlucoseChart(store: store, hours: $chartHours)
-            statsGrid
-            insulinRow
-            sensorRow
-            recentMeals
-            summaryRow
-            if let err = store.fetchError ?? store.state?.error {
-                Text(err).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
+                current
+                GlucoseChart(store: store, hours: $chartHours)
+                statTiles
+                infoRows
+                recentMeals
+                if let err = store.fetchError ?? store.state?.error {
+                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                }
             }
-            Divider()
-            actions
+            .padding([.horizontal, .top], 14)
+            Divider().padding(.horizontal, 14)
+            menu.padding(.horizontal, 5).padding(.bottom, 5)
         }
-        .padding()
         .frame(width: 340)
     }
 
-    private func open(_ id: String) {
-        NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: id)
-    }
+    // MARK: reading
 
     @ViewBuilder private var current: some View {
-        if let r = store.reading {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(store.format(r.mgdl)).font(.system(size: 34, weight: .semibold)).monospacedDigit()
-                    Text(r.arrow).font(.title)
-                    if let d = r.delta {
-                        Text(formatDelta(d, mmol: useMmol)).font(.title3).monospacedDigit()
+        HStack(alignment: .top) {
+            if let r = store.reading {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(store.format(r.mgdl)).font(.system(size: 38, weight: .semibold, design: .rounded)).monospacedDigit()
+                        Text(r.arrow).font(.system(size: 26, weight: .medium))
+                        VStack(alignment: .leading, spacing: 0) {
+                            if let d = r.delta { Text(formatDelta(d, mmol: useMmol)).monospacedDigit() }
+                            Text(useMmol ? "mmol/L" : "mg/dL").foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
                     }
-                    Text(useMmol ? "mmol/L" : "mg/dL").foregroundStyle(.secondary)
-                    Spacer()
-                    Button { open("log") } label: { Image(systemName: "plus.circle.fill").font(.title2) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.tint)
-                        .help("Log a meal or insulin")
+                    .foregroundStyle(store.color)
+                    Text("Measured \(r.timestamp.formatted(.relative(presentation: .named)))")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let fc = store.state?.forecast { forecastLine(fc) }
                 }
-                .foregroundStyle(store.color)
-                Text("Measured \(r.timestamp.formatted(.relative(presentation: .named)))")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let fc = store.state?.forecast {
-                    forecastLine(fc)
-                }
+            } else {
+                Text("No reading yet").font(.headline)
             }
-        } else {
-            Text("No reading yet").font(.headline)
+            Spacer()
+            Button { open("log") } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 30, height: 30)
+                    .background(.tint.opacity(0.15), in: Circle())
+                    .foregroundStyle(.tint)
+            }
+            .buttonStyle(.plain)
+            .help("Log a meal or insulin")
         }
     }
 
@@ -72,61 +78,33 @@ struct MenuContent: View {
         }
     }
 
-    private var statsGrid: some View {
-        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
-            GridRow {
-                Text("")
-                Text("In range").foregroundStyle(.secondary)
-                Text("Average").foregroundStyle(.secondary)
-                Text("A1c est.").foregroundStyle(.secondary)
-            }
-            .font(.caption)
-            statsRow("Today", store.stats?.today)
-            statsRow("7 days", store.stats?.week)
+    // MARK: stats
+
+    private var statTiles: some View {
+        let today = store.stats?.today, week = store.stats?.week
+        return HStack(spacing: 8) {
+            StatTile(title: "In range", today: today.map { "\($0.inRange)%" }, week: week.map { "\($0.inRange)%" })
+            StatTile(title: "Average", today: today.map { store.format($0.average) }, week: week.map { store.format($0.average) })
+            StatTile(title: "A1c est.", today: today.map { String(format: "%.1f%%", $0.gmi) }, week: week.map { String(format: "%.1f%%", $0.gmi) })
         }
     }
 
-    private func statsRow(_ label: String, _ s: Stats?) -> some View {
-        GridRow {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            if let s {
-                Text("\(s.inRange)%").help("\(s.below)% below · \(s.above)% above")
-                Text(store.format(s.average))
-                Text(String(format: "%.1f%%", s.gmi))
-            } else {
-                Text("–"); Text("–"); Text("–")
-            }
-        }
-        .monospacedDigit()
-    }
-
-    @ViewBuilder private var insulinRow: some View {
-        let today = store.insulinToday()
-        if today.rapid + today.long > 0 {
-            HStack {
-                Image(systemName: "syringe")
-                Text("Insulin today: \(formatUnits(today.rapid)) u rapid · \(formatUnits(today.long)) u long")
-                Spacer()
-            }
-            .font(.caption)
-        }
-    }
-
-    @ViewBuilder private var sensorRow: some View {
-        if let ends = store.sensorEnds {
-            let left = ends.timeIntervalSinceNow
-            HStack {
-                Image(systemName: "sensor.tag.radiowaves.forward")
-                if left > 0 {
-                    Text("Sensor ends in \(Duration.seconds(left).formatted(.units(allowed: [.days, .hours], width: .abbreviated)))")
-                } else {
-                    Text("Sensor expired")
+    @ViewBuilder private var infoRows: some View {
+        let insulin = store.insulinToday()
+        if insulin.rapid + insulin.long > 0 || store.sensorEnds != nil {
+            VStack(spacing: 6) {
+                if insulin.rapid + insulin.long > 0 {
+                    InfoRow(symbol: "syringe", text: "Insulin today",
+                            value: "\(formatUnits(insulin.rapid)) u rapid · \(formatUnits(insulin.long)) u long")
                 }
-                Spacer()
-                Text(ends.formatted(.dateTime.weekday(.abbreviated).hour().minute())).foregroundStyle(.secondary)
+                if let ends = store.sensorEnds {
+                    let left = ends.timeIntervalSinceNow
+                    InfoRow(symbol: "sensor.tag.radiowaves.forward",
+                            text: left > 0 ? "Sensor ends in \(Duration.seconds(left).formatted(.units(allowed: [.days, .hours], width: .abbreviated)))" : "Sensor expired",
+                            value: ends.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
+                        .foregroundStyle(left < 86400 ? .orange : .primary)
+                }
             }
-            .font(.caption)
-            .foregroundStyle(left < 86400 ? .orange : .primary)
         }
     }
 
@@ -134,66 +112,112 @@ struct MenuContent: View {
         let recent = store.meals.suffix(3).reversed()
         if !recent.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Recent meals").font(.caption.bold()).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("All meals") { open("meals") }.buttonStyle(.link).font(.caption)
+                Text("Recent Meals").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(Array(recent)) { meal in
+                    if let entry = store.entry(meal.id) {
+                        Button { open.edit(meal.id) } label: {
+                            EntryRow(store: store, entry: entry, meal: meal, compact: true).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Edit this meal")
+                    }
                 }
-                ForEach(Array(recent)) { MealRow(meal: $0, store: store, compact: true) }
             }
         }
     }
 
-    @ViewBuilder private var summaryRow: some View {
-        if store.summary != nil || store.aiAvailable {
-            Button { open("summary") } label: {
-                HStack {
-                    Image(systemName: "text.document")
-                    Text(store.summary.map { "Weekly summary · \($0.created.formatted(.dateTime.weekday(.wide)))" } ?? "Weekly summary")
-                    Spacer()
-                    Image(systemName: "chevron.right").foregroundStyle(.secondary)
-                }
-                .font(.caption)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-    }
+    // MARK: menu
 
-    private var actions: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private var menu: some View {
+        VStack(spacing: 0) {
+            MenuRow("Log Meal or Insulin…", symbol: "plus.circle") { open("log") }
+            MenuRow("Journal", symbol: "list.bullet.rectangle") { open("journal") }
+            if store.summary != nil || store.aiAvailable {
+                MenuRow("Weekly Summary", symbol: "text.document",
+                        detail: store.summary.map { $0.created.formatted(.dateTime.weekday(.wide)) }) { open("summary") }
+            }
+            Divider().padding(.horizontal, 9).padding(.vertical, 4)
             if alerts.isSnoozed, let until = alerts.snoozedUntil {
-                HStack {
-                    Image(systemName: "bell.slash")
-                    Text("Alerts off until \(until.formatted(date: .omitted, time: .shortened))")
-                    Spacer()
-                    Button("Resume") { alerts.cancelSnooze() }
-                }
-                .font(.caption)
+                MenuRow("Resume Alerts", symbol: "bell",
+                        detail: "Off until \(until.formatted(date: .omitted, time: .shortened))") { alerts.cancelSnooze() }
+            } else {
+                MenuRow("Snooze Alerts for 30 Minutes", symbol: "bell.slash") { alerts.snooze() }
             }
-            HStack {
-                if !alerts.isSnoozed {
-                    Button("Snooze alerts 30 min") { alerts.snooze() }
-                }
-                Spacer()
-                Menu("More") {
-                    Button("Log meal or insulin…") { open("log") }
-                    Button("All meals…") { open("meals") }
-                    Button("Weekly summary…") { open("summary") }
-                    Divider()
-                    Button("Open web page") { store.openWebPage() }
-                    Button("Export CSV…") { store.exportCSV() }
-                    Button("Refresh now") { Task { await store.refresh() } }
-                }
-                .fixedSize()
-            }
-            HStack {
-                SettingsLink { Text("Settings…") }
-                    .simultaneousGesture(TapGesture().onEnded { NSApp.activate(ignoringOtherApps: true) })
-                Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-            }
+            MenuRow("Open Web Page", symbol: "safari") { store.openWebPage() }
+            MenuRow("Export CSV…", symbol: "square.and.arrow.up") { store.exportCSV() }
+            Divider().padding(.horizontal, 9).padding(.vertical, 4)
+            MenuRow("Settings…", symbol: "gearshape") { open("settings") }
+            MenuRow("Quit GlucoseBar", symbol: "power") { NSApplication.shared.terminate(nil) }
         }
+    }
+}
+
+private struct StatTile: View {
+    let title: String
+    let today: String?
+    let week: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(today ?? "–").font(.system(.title3, design: .rounded).weight(.semibold)).monospacedDigit()
+            Text("7 days \(week ?? "–")").font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .help("\(title): today, and the last 7 days")
+    }
+}
+
+private struct InfoRow: View {
+    let symbol: String
+    let text: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: symbol).frame(width: 16).foregroundStyle(.secondary)
+            Text(text)
+            Spacer()
+            Text(value).foregroundStyle(.secondary)
+        }
+        .font(.callout)
+    }
+}
+
+/// A full-width row that highlights on hover, like a menu item.
+private struct MenuRow: View {
+    let title: String
+    let symbol: String
+    var detail: String?
+    let action: () -> Void
+    @State private var hovering = false
+
+    init(_ title: String, symbol: String, detail: String? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.symbol = symbol
+        self.detail = detail
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).frame(width: 18)
+                Text(title)
+                Spacer()
+                if let detail { Text(detail).foregroundStyle(hovering ? .white.opacity(0.8) : .secondary) }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .foregroundStyle(hovering ? .white : .primary)
+            .background(hovering ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 

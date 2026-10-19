@@ -17,7 +17,8 @@ final class GlucoseStore: ObservableObject {
     @Published var stats: StatsResponse?
     @Published var fetchError: String?
     @Published var meals: [Meal] = []
-    @Published var recentEvents: [GlucoseEvent] = []
+    /// Meals and insulin from the last 30 days, oldest first.
+    @Published var entries: [GlucoseEvent] = []
     @Published var summary: Summary?
     @Published var aiAvailable = false
     @Published var generatingSummary = false
@@ -48,8 +49,8 @@ final class GlucoseStore: ObservableObject {
             let hours = max(defaults.integer(forKey: "chartHours"), 3)
             state = try await get("/glucose?hours=\(hours)")
             stats = try await get("/stats?low=\(targetLow)&high=\(targetHigh)")
-            meals = try await get("/meals?days=30&high=\(targetHigh)")
-            recentEvents = try await get("/events?hours=24")
+            meals = try await get("/meals?days=30&low=\(targetLow)&high=\(targetHigh)")
+            entries = try await get("/events?hours=720")
             aiAvailable = state?.aiAvailable ?? false
             if Date().timeIntervalSince(lastSummaryFetch) > 600 { await refreshSummary() }
             fetchError = nil
@@ -90,7 +91,7 @@ final class GlucoseStore: ObservableObject {
     func insulinToday() -> (rapid: Double, long: Double) {
         let start = Calendar.current.startOfDay(for: Date())
         var rapid = 0.0, long = 0.0
-        for e in recentEvents where !e.isMeal && e.timestamp >= start {
+        for e in entries where !e.isMeal && e.timestamp >= start {
             if e.insulinType == "long" { long += e.units ?? 0 } else { rapid += e.units ?? 0 }
         }
         return (rapid, long)
@@ -113,11 +114,57 @@ final class GlucoseStore: ObservableObject {
         await refresh()
     }
 
+    /// Fields to change on an existing entry; nil fields are left out, so they stay as they are
+    /// (set `clearCarbs` or `removePhoto` to clear a value).
+    struct EventChange: Encodable {
+        var timestamp: Date?
+        var carbs: Double?
+        var clearCarbs = false
+        var units: Double?
+        var insulinType: String?
+        var note: String?
+        var photo: String?
+        var mediaType: String?
+        var removePhoto: Bool?
+        var estimate: MealEstimate?
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encodeIfPresent(timestamp, forKey: .timestamp)
+            if clearCarbs { try c.encodeNil(forKey: .carbs) } else { try c.encodeIfPresent(carbs, forKey: .carbs) }
+            try c.encodeIfPresent(units, forKey: .units)
+            try c.encodeIfPresent(insulinType, forKey: .insulinType)
+            try c.encodeIfPresent(note, forKey: .note)
+            try c.encodeIfPresent(photo, forKey: .photo)
+            try c.encodeIfPresent(mediaType, forKey: .mediaType)
+            try c.encodeIfPresent(removePhoto, forKey: .removePhoto)
+            try c.encodeIfPresent(estimate, forKey: .estimate)
+        }
+
+        enum CodingKeys: String, CodingKey { case timestamp, carbs, units, insulinType, note, photo, mediaType, removePhoto, estimate }
+    }
+
+    func updateEvent(_ id: Int, _ change: EventChange) async throws {
+        let _: GlucoseEvent = try await send("PATCH", "/events/\(id)", body: change)
+        await refresh()
+    }
+
     func deleteEvent(_ id: Int) async {
         var req = URLRequest(url: URL(string: "/events/\(id)", relativeTo: Self.server)!)
         req.httpMethod = "DELETE"
         _ = try? await URLSession.shared.data(for: req)
         await refresh()
+    }
+
+    func entry(_ id: Int) -> GlucoseEvent? { entries.first { $0.id == id } }
+    func meal(_ id: Int) -> Meal? { meals.first { $0.id == id } }
+
+    func doseSuggestion(carbs: Double) async throws -> DoseSuggestion {
+        try await fetch("/dose?carbs=\(carbs)&target=\(defaults.integer(forKey: "doseTarget"))&low=\(targetLow)")
+    }
+
+    func readings(from start: Date, to end: Date) async -> [Point] {
+        (try? await get("/readings?start=\(Int(start.timeIntervalSince1970))&end=\(Int(end.timeIntervalSince1970))")) ?? []
     }
 
     struct EstimateRequest: Encodable { let photo: String?; let mediaType: String; let text: String? }
@@ -141,6 +188,15 @@ final class GlucoseStore: ObservableObject {
         encoder.dateEncodingStrategy = .iso8601
         req.httpBody = try encoder.encode(body)
         let (data, response) = try await URLSession.shared.data(for: req)
+        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            throw (try? decoder.decode(ServerError.self, from: data)) ?? ServerError(error: "Server error \(http.statusCode)")
+        }
+        return try decoder.decode(T.self, from: data)
+    }
+
+    /// GET that turns the server's {"error": ...} replies into errors.
+    private func fetch<T: Decodable>(_ path: String) async throws -> T {
+        let (data, response) = try await URLSession.shared.data(from: URL(string: path, relativeTo: Self.server)!)
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             throw (try? decoder.decode(ServerError.self, from: data)) ?? ServerError(error: "Server error \(http.statusCode)")
         }

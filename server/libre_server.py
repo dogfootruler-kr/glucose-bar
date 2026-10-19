@@ -5,12 +5,15 @@ keeps every reading in a local SQLite database and serves it over HTTP.
   GET /                       live web page
   GET /glucose?hours=12       latest reading, delta, sensor info and history
   GET /stats?low=70&high=180  time in range, average and A1c estimate (today / 7 days)
+  GET /readings?start=&end=   readings between two Unix times
   GET /export.csv             every stored reading
   GET/POST /events            meals and insulin (POST {kind, ts?, carbs?, units?, insulinType?, note?, photo?})
+  PATCH /events/<id>          change fields (same as POST; "removePhoto": true drops the photo)
   DELETE /events/<id>
   GET /photos/<id>            meal photo
   POST /meals/estimate        {photo?, mediaType?, text?} -> Claude carb estimate
-  GET /meals?days=30&high=180 meals with their glucose impact
+  GET /meals?days=30&high=180 meals with their glucose impact and how the insulin dose worked out
+  GET /dose?carbs=50&target=120&low=70   rapid-insulin suggestion learned from the history
   GET /summary, POST /summary/generate   weekly recap written by Claude
 
 Config: ~/.config/freestyle-bar/config.json
@@ -36,6 +39,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import dosing
 import insights
 
 try:
@@ -115,11 +119,32 @@ def events(since_ts, kind=None):
     return [event_json(r) for r in rows]
 
 
+def parse_time(value):
+    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+
+
+def save_photo(conn, eid, body):
+    os.makedirs(PHOTO_DIR, exist_ok=True)
+    ext = {"image/png": "png", "image/webp": "webp", "image/gif": "gif"}.get(body.get("mediaType"), "jpg")
+    name = f"{eid}.{ext}"
+    with open(os.path.join(PHOTO_DIR, name), "wb") as f:
+        f.write(base64.b64decode(body["photo"]))
+    conn.execute("UPDATE events SET photo = ? WHERE id = ?", (name, eid))
+    return name
+
+
+def remove_photo(name):
+    try:
+        os.remove(os.path.join(PHOTO_DIR, name))
+    except FileNotFoundError:
+        pass
+
+
 def add_event(body):
     kind = body.get("kind")
     if kind not in ("meal", "insulin"):
         raise ValueError("kind must be meal or insulin")
-    ts = int(datetime.fromisoformat(body["timestamp"].replace("Z", "+00:00")).timestamp()) if body.get("timestamp") else int(time.time())
+    ts = parse_time(body["timestamp"]) if body.get("timestamp") else int(time.time())
     with db() as conn:
         cur = conn.execute(
             "INSERT INTO events (ts, kind, carbs, units, insulin_type, note, estimate) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -127,12 +152,34 @@ def add_event(body):
              json.dumps(body["estimate"]) if body.get("estimate") else None))
         eid = cur.lastrowid
         if body.get("photo"):
-            os.makedirs(PHOTO_DIR, exist_ok=True)
-            ext = {"image/png": "png", "image/webp": "webp", "image/gif": "gif"}.get(body.get("mediaType"), "jpg")
-            name = f"{eid}.{ext}"
-            with open(os.path.join(PHOTO_DIR, name), "wb") as f:
-                f.write(base64.b64decode(body["photo"]))
-            conn.execute("UPDATE events SET photo = ? WHERE id = ?", (name, eid))
+            save_photo(conn, eid, body)
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
+    return event_json(row)
+
+
+EDITABLE = {"carbs": "carbs", "units": "units", "insulinType": "insulin_type", "note": "note"}
+
+
+def update_event(eid, body):
+    """Changes the fields present in body; the others stay as they are."""
+    with db() as conn:
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
+        if not row:
+            raise LookupError("No such entry")
+        sets = {col: body[key] for key, col in EDITABLE.items() if key in body}
+        if "note" in sets:
+            sets["note"] = (sets["note"] or "").strip() or None
+        if body.get("timestamp"):
+            sets["ts"] = parse_time(body["timestamp"])
+        if "estimate" in body:
+            sets["estimate"] = json.dumps(body["estimate"]) if body["estimate"] else None
+        if sets:
+            conn.execute(f"UPDATE events SET {', '.join(f'{c} = ?' for c in sets)} WHERE id = ?", (*sets.values(), eid))
+        if (body.get("photo") or body.get("removePhoto")) and row["photo"]:
+            remove_photo(row["photo"])
+            conn.execute("UPDATE events SET photo = NULL WHERE id = ?", (eid,))
+        if body.get("photo"):
+            save_photo(conn, eid, body)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
     return event_json(row)
 
@@ -142,20 +189,41 @@ def delete_event(eid):
         row = conn.execute("SELECT photo FROM events WHERE id = ?", (eid,)).fetchone()
         conn.execute("DELETE FROM events WHERE id = ?", (eid,))
     if row and row["photo"]:
-        try:
-            os.remove(os.path.join(PHOTO_DIR, row["photo"]))
-        except FileNotFoundError:
-            pass
+        remove_photo(row["photo"])
 
 
-def meals_with_impact(since_ts, high):
+def dosing_params(low=70):
+    """Carb ratio and sensitivity learned from the last 30 days, or None without insulin logs."""
+    since = int(time.time()) - 30 * 86400
+    return dosing.fit(history(since), events(since), low)
+
+
+def meals_with_impact(since_ts, high, low=70):
     now = time.time()
+    context = events(since_ts - 4 * 3600)
+    meals = [e for e in context if e["kind"] == "meal"]
+    insulin = [e for e in context if e["kind"] == "insulin"]
+    params = dosing_params(low)
     out = []
-    for m in events(since_ts, "meal"):
+    for m in meals:
+        if m["ts"] < since_ts:
+            continue
         readings = history(m["ts"] - 15 * 60, m["ts"] + insights.MEAL_WINDOW)
         m["impact"] = insights.meal_impact(m["ts"], readings, high, now)
+        m["dose"] = dosing.meal_dose(m["ts"], meals, insulin, readings, low, high, now, params)
         out.append(m)
     return out
+
+
+def dose_suggestion(carbs, target, low):
+    params = dosing_params(low)
+    if not params:
+        raise RuntimeError("Log your rapid and long-acting insulin for a day or two first.")
+    now = int(time.time())
+    recent = history(now - 30 * 60)
+    glucose = recent[-1][1] if recent and recent[-1][0] >= now - 15 * 60 else None
+    fc = insights.forecast(recent) if glucose is not None else None
+    return dosing.suggest(params, carbs, glucose, fc["slope"] if fc else None, events(now - 8 * 3600), now, target, low)
 
 
 # --- weekly summary ------------------------------------------------------------
@@ -178,7 +246,7 @@ def generate_summary(low=70, high=180):
     with summary_lock:
         start, end, prev_start = insights.week_bounds(datetime.now())
         s, e, p = int(start.timestamp()), int(end.timestamp()), int(prev_start.timestamp())
-        digest = insights.weekly_digest(history(s, e), history(p, s), events(s), meals_with_impact(s, high), low, high, s, e)
+        digest = insights.weekly_digest(history(s, e), history(p, s), events(s), meals_with_impact(s, high, low), low, high, s, e)
         if not digest["week"]:
             raise RuntimeError("No glucose data for the past week yet.")
         text = ai.weekly_summary(digest)
@@ -400,6 +468,10 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"today": stats(int(midnight.timestamp()), low, high),
                        "week": stats(int(week.timestamp()), low, high)}
             self._send(json.dumps(payload).encode(), "application/json")
+        elif path == "/readings":
+            start = int(float(q.get("start", time.time() - 3 * 3600)))
+            end = int(float(q.get("end", time.time())))
+            self._json([{"mgdl": m, "timestamp": iso(ts)} for ts, m in history(start, end)])
         elif path == "/export.csv":
             lines = ["timestamp_utc,local_time,mg_dl,mmol_l"]
             for ts, m in history(0):
@@ -408,7 +480,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(("\n".join(lines) + "\n").encode(), "text/csv",
                        {"content-disposition": 'attachment; filename="glucose.csv"'})
         elif path == "/events":
-            self._json(events(int(time.time() - float(q.get("hours", 24)) * 3600)))
+            hours = min(float(q.get("hours", 24)), 24 * 365)
+            self._json(events(int(time.time() - hours * 3600)))
         elif path.startswith("/photos/"):
             with db() as conn:
                 row = conn.execute("SELECT photo FROM events WHERE id = ?", (path.split("/")[-1],)).fetchone()
@@ -419,7 +492,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(f.read(), {"jpg": "image/jpeg"}.get(ext, f"image/{ext}"))
         elif path == "/meals":
             since = int(time.time() - float(q.get("days", 30)) * 86400)
-            self._json(meals_with_impact(since, int(q.get("high", 180))))
+            self._json(meals_with_impact(since, int(q.get("high", 180)), int(q.get("low", 70))))
+        elif path == "/dose":
+            try:
+                self._json(dose_suggestion(float(q.get("carbs", 0)), int(q.get("target", 120)), int(q.get("low", 70))))
+            except Exception as e:
+                self._json({"error": str(e)}, 400)
         elif path == "/summary":
             self._json({"summary": latest_summary(), "aiAvailable": bool(ai and ai.available())})
         else:
@@ -440,6 +518,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(generate_summary(int(q.get("low", 70)), int(q.get("high", 180))))
             else:
                 self.send_error(404)
+        except Exception as e:
+            log(f"{path} error: {e}")
+            self._json({"error": str(e)}, 400)
+
+    def do_PATCH(self):
+        path = urlparse(self.path).path.rstrip("/")
+        if not (path.startswith("/events/") and path.split("/")[-1].isdigit()):
+            return self.send_error(404)
+        try:
+            self._json(update_event(int(path.split("/")[-1]), self._body()))
+        except LookupError as e:
+            self._json({"error": str(e)}, 404)
         except Exception as e:
             log(f"{path} error: {e}")
             self._json({"error": str(e)}, 400)

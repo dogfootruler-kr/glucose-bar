@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 FORECAST_WINDOW = 20 * 60   # seconds of history used for the trend
 FORECAST_MINUTES = 30
 MEAL_WINDOW = 3 * 3600
+EARLY_WINDOW = 90 * 60
 
 
 def forecast(readings):
@@ -47,6 +48,11 @@ def meal_impact(meal_ts, readings, high, now):
     back = next((ts for ts, v in after if ts > peak_ts and v <= baseline + 20), None)
 
     score = 100 - max(0, rise - 30) * 0.6 - (above / 60) * 0.15
+    # The first 90 minutes mostly reflect the food (and how early the insulin went in); what
+    # happens after mostly reflects whether the dose was right, so the food score ignores it.
+    early = [v for ts, v in after if ts <= meal_ts + EARLY_WINDOW] or [baseline]
+    early_rise = max(0, max(early) - baseline)
+    food_score = 100 - max(0, early_rise - 30) * 0.6
     return {
         "baseline": baseline,
         "peak": peak,
@@ -55,6 +61,8 @@ def meal_impact(meal_ts, readings, high, now):
         "minutesAboveHigh": round(above / 60),
         "minutesToBaseline": round((back - meal_ts) / 60) if back else None,
         "score": int(max(0, min(100, round(score)))),
+        "earlyRise": early_rise,
+        "foodScore": int(max(0, min(100, round(food_score)))),
         "complete": now >= meal_ts + MEAL_WINDOW,
     }
 
@@ -123,6 +131,11 @@ def weekly_digest(readings, prev_readings, events, meals, low, high, start, end)
             "rise": (m.get("impact") or {}).get("rise"),
             "minutesAboveHigh": (m.get("impact") or {}).get("minutesAboveHigh"),
             "score": (m.get("impact") or {}).get("score"),
+            "foodScore": (m.get("impact") or {}).get("foodScore"),
+            "rapidInsulin": (m.get("dose") or {}).get("units"),
+            "insulinMinutesFromMeal": (m.get("dose") or {}).get("minutesFromMeal"),
+            "doseVerdict": (m.get("dose") or {}).get("verdict"),
+            "doseNote": (m.get("dose") or {}).get("reason"),
         } for m in meals],
     }
 

@@ -12,7 +12,9 @@ Phone (Libre app) → LibreView cloud → LibreLinkUp API → `server/libre_serv
 - Settings window: units, target range, alert thresholds, menu bar display, open at login
 - Forecast: 30-minute projection from the last 20 minutes (dotted line), with a "heading low" alert up to 20 minutes ahead
 - Meal and insulin log (popup `+` button or the web page, including from a phone camera); Claude estimates carbs from a photo
-- Meal impact: rise, time to peak, time above range and a 0-100 score per meal; ranking in Meals
+- Journal: every meal and insulin entry by day, editable and deletable (here and on the web page), with each meal's glucose curve
+- Meal impact: a 0-100 food score from the first 90 minutes after eating, plus whether the rapid insulin around it was about right, too little or too much (judged from where glucose ended up, later correction doses and lows)
+- Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active. An estimate, not medical advice
 - Weekly summary written by Claude every Sunday from 19:00, or on demand
 
 Meal estimates and weekly summaries use the Claude Agent SDK, which runs on the Claude subscription you're logged into with `claude` (no API key).
@@ -41,7 +43,9 @@ If the short name doesn't resolve, use the full MagicDNS name (`glucose-work.<ta
 | `/glucose?hours=12` | latest reading, delta, sensor, history |
 | `/stats?low=70&high=180` | today / 7-day stats |
 | `/export.csv` | all stored readings |
-| `/events` | GET / POST meals and insulin; `DELETE /events/<id>` |
-| `/meals?days=30` | meals with glucose impact |
+| `/events` | GET / POST meals and insulin; `PATCH` / `DELETE /events/<id>` |
+| `/meals?days=30` | meals with glucose impact and dose outcome |
+| `/dose?carbs=50&target=120` | rapid-insulin suggestion and the learned ratios |
+| `/readings?start=&end=` | readings between two Unix times |
 | `/meals/estimate` | POST photo/text, returns a carb estimate |
 | `/summary`, `/summary/generate` | weekly summary |

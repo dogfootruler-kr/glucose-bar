@@ -12,18 +12,25 @@ struct GlucoseBarApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Log meal or insulin", id: "log") {
-            LogView(store: store)
+        Window("New Entry", id: "log") {
+            EntryEditor(store: store).activatesWindow("log")
         }
         .windowResizability(.contentSize)
 
-        Window("Meals", id: "meals") {
-            MealsView(store: store)
+        WindowGroup("Edit Entry", id: "edit", for: Int.self) { $id in
+            EditEntryWindow(store: store, id: id)
         }
+        .windowResizability(.contentSize)
+
+        Window("Journal", id: "journal") {
+            JournalView(store: store)
+        }
+        .defaultSize(width: 860, height: 600)
 
         Window("Weekly Summary", id: "summary") {
             SummaryView(store: store)
         }
+        .defaultSize(width: 560, height: 640)
 
         Settings {
             SettingsView(store: store)

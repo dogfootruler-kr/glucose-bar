@@ -4,37 +4,50 @@ struct SummaryView: View {
     @ObservedObject var store: GlucoseStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    if let s = store.summary {
-                        Text("\(s.periodStart.formatted(.dateTime.day().month())) – \(s.periodEnd.formatted(.dateTime.day().month().year()))")
-                            .font(.caption).foregroundStyle(.secondary)
+        Group {
+            if let s = store.summary {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("\(s.periodStart.formatted(.dateTime.day().month(.wide))) – \(s.periodEnd.formatted(.dateTime.day().month(.wide).year()))")
+                            .font(.subheadline).foregroundStyle(.secondary)
                         MarkdownText(s.text)
-                    } else {
-                        Text("No summary yet").font(.headline)
-                        Text("A summary of the past 7 days is written every Sunday evening.")
-                            .foregroundStyle(.secondary)
+                        Text("Written by Claude \(s.created.formatted(.relative(presentation: .named)))")
+                            .font(.caption).foregroundStyle(.tertiary)
+                            .padding(.top, 8)
                     }
+                    .frame(maxWidth: 560, alignment: .leading)
+                    .padding(28)
+                    .frame(maxWidth: .infinity)
+                    .textSelection(.enabled)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .textSelection(.enabled)
-            }
-            Divider()
-            HStack {
-                if !store.aiAvailable {
-                    Text("Claude is unavailable: run `claude` once to log in").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ContentUnavailableView {
+                    Label("No Summary Yet", systemImage: "text.document")
+                } description: {
+                    Text("A summary of the past 7 days is written every Sunday evening.")
+                } actions: {
+                    Button("Write One Now") { Task { await store.generateSummary() } }
+                        .disabled(store.generatingSummary || !store.aiAvailable)
                 }
-                Spacer()
-                if store.generatingSummary { ProgressView().controlSize(.small) }
-                Button("Write a new summary now") { Task { await store.generateSummary() } }
-                    .disabled(store.generatingSummary || !store.aiAvailable)
             }
-            .padding()
         }
-        .frame(minWidth: 460, minHeight: 440)
+        .frame(minWidth: 480, minHeight: 480)
+        .navigationTitle("Weekly Summary")
+        .toolbar {
+            ToolbarItem {
+                if store.generatingSummary {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button { Task { await store.generateSummary() } } label: {
+                        Label("Write New Summary", systemImage: "sparkles")
+                    }
+                    .disabled(!store.aiAvailable)
+                    .help(store.aiAvailable ? "Write a new summary of the past 7 days" : "Claude is unavailable: run `claude` once on the server Mac to log in")
+                }
+            }
+        }
         .task { await store.refreshSummary() }
+        .activatesWindow("summary")
     }
 }
 
@@ -44,14 +57,14 @@ struct MarkdownText: View {
     init(_ text: String) { lines = text.components(separatedBy: "\n") }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, raw in
                 let line = raw.trimmingCharacters(in: .whitespaces)
                 if line.hasPrefix("#") {
-                    inline(line.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)).font(.headline).padding(.top, 4)
+                    inline(line.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)).font(.title3.weight(.semibold)).padding(.top, 8)
                 } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("•")
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("•").foregroundStyle(.secondary)
                         inline(String(line.dropFirst(2)))
                     }
                 } else if !line.isEmpty {
@@ -59,6 +72,8 @@ struct MarkdownText: View {
                 }
             }
         }
+        .font(.body)
+        .lineSpacing(3)
     }
 
     private func inline(_ s: String) -> Text {

@@ -41,18 +41,48 @@
   .btn.primary { background: var(--line); color: #fff; }
   .btn:disabled { opacity: .5; cursor: default; }
   .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-  .meal { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--grid); }
-  .meal:first-of-type { border-top: 0; }
-  .meal img, .meal .ph { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; flex: none; background: var(--grid); display: grid; place-items: center; }
-  .meal .info { flex: 1; min-width: 0; }
-  .meal .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .score { font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; text-align: right; }
-  .score small { display: block; font-size: 10px; font-weight: 400; color: var(--muted); }
+  .jhead { display: flex; gap: 8px; margin-bottom: 8px; }
+  .jhead .seg { flex: 1; margin: 0; }
+  .jhead select { width: auto; padding: 6px 8px; }
+  details.day { border-top: 1px solid var(--grid); }
+  details.day:first-of-type { border-top: 0; }
+  details.day > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: baseline;
+                          gap: 8px; padding: 10px 0; font-weight: 600; }
+  details.day > summary::-webkit-details-marker { display: none; }
+  details.day > summary::before { content: '›'; display: inline-block; width: 12px; color: var(--muted); transition: transform .15s; }
+  details.day[open] > summary::before { transform: rotate(90deg); }
+  details.day > summary .day-name { flex: 1; }
+  details.day > summary .totals { font-weight: 400; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .entry { border-radius: 10px; margin: 0 -8px; padding: 6px 8px; cursor: pointer; }
+  .entry:hover { background: var(--bg); }
+  .entry.open { background: var(--bg); }
+  .entry .row { display: flex; gap: 10px; align-items: center; }
+  .thumb { width: 40px; height: 40px; border-radius: 9px; object-fit: cover; flex: none; display: grid; place-items: center; font-size: 18px; }
+  .thumb.meal { background: rgba(234,88,12,.15); }
+  .thumb.insulin { width: 28px; height: 28px; margin: 0 6px; border-radius: 7px; font-size: 14px; background: rgba(147,51,234,.15); }
+  .entry .info { flex: 1; min-width: 0; }
+  .entry .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .score { font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; text-align: right; flex: none; line-height: 1.1; }
+  .score small { display: block; font-size: 10px; font-weight: 500; }
+  .more { display: none; padding: 8px 0 4px 50px; font-size: 13px; }
+  .entry.open .more { display: block; }
+  .more .facts { color: var(--muted); }
+  .more .facts div { margin: 2px 0; }
+  .entry-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .entry-actions .btn { padding: 6px 12px; font-size: 13px; }
+  .showall { margin-top: 8px; }
   .summary h3 { font-size: 15px; margin: 12px 0 4px; }
   .summary ul { margin: 4px 0; padding-left: 20px; }
   .summary p { margin: 6px 0; }
   .preview { max-width: 100%; max-height: 180px; border-radius: 8px; margin-top: 8px; display: none; }
   .small { font-size: 13px; }
+  .dose { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--bg); }
+  .dose b { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .dose details { margin-top: 6px; } .dose table { width: 100%; font-size: 13px; border-collapse: collapse; }
+  .dose td:last-child { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 8px; }
+  .check { display: flex; gap: 8px; align-items: center; margin: 10px 0 0; color: var(--fg); font-size: 15px; }
+  .check input { width: auto; }
+  .btn.danger { color: var(--low); }
   .linkbtn { background: none; border: 0; color: var(--line); font: inherit; font-size: 13px; cursor: pointer; padding: 0; text-transform: none; letter-spacing: 0; }
 </style>
 </head>
@@ -73,7 +103,7 @@
   </div>
 
   <div class="card" id="log">
-    <h2>Log</h2>
+    <h2><span id="logTitle">Log</span> <button class="linkbtn" id="cancelEdit" style="display:none">Cancel edit</button></h2>
     <div class="seg" id="kind">
       <button data-kind="meal" class="on">🍽 Meal</button>
       <button data-kind="insulin">💉 Insulin</button>
@@ -88,6 +118,8 @@
       <div id="estimateResult" class="small muted"></div>
       <label for="carbs">Carbs (g)</label>
       <input id="carbs" type="number" inputmode="decimal" min="0">
+      <div id="doseBox" class="dose" style="display:none"></div>
+      <label class="check" id="alsoDoseRow" style="display:none"><input type="checkbox" id="alsoDose"> Also log <input id="doseUnits" type="number" step="0.5" min="0" style="width:70px"> u rapid insulin</label>
     </div>
     <div id="insulinForm" style="display:none">
       <div class="row">
@@ -99,14 +131,21 @@
     </div>
     <label for="time">Time</label>
     <input id="time" type="datetime-local">
-    <div class="actions"><button class="btn primary" id="save">Save</button><span id="saveMsg" class="small muted"></span></div>
+    <div class="actions"><button class="btn primary" id="save">Save</button><button class="btn danger" id="deleteEntry" style="display:none">Delete</button><span id="saveMsg" class="small muted"></span></div>
   </div>
 
   <div class="card" id="meals">
-    <h2>Meals
-      <span><button class="linkbtn" data-sort="recent">Recent</button> · <button class="linkbtn" data-sort="best">Easiest</button> · <button class="linkbtn" data-sort="worst">Hardest</button></span>
-    </h2>
-    <div id="mealList" class="muted small">No meals logged yet.</div>
+    <h2>Journal</h2>
+    <div class="jhead">
+      <div class="seg" id="jfilter">
+        <button data-filter="all" class="on">All</button><button data-filter="meal">Meals</button><button data-filter="insulin">Insulin</button>
+      </div>
+      <select id="jsort" aria-label="Sort">
+        <option value="recent">By day</option><option value="best">Easiest first</option><option value="worst">Hardest first</option>
+      </select>
+    </div>
+    <div id="mealList" class="muted small">Nothing logged yet.</div>
+    <div class="muted small" style="margin-top:10px">Meal score: how gently glucose rose in the first 90 minutes, so a dose that was off doesn't count against the food. Tap an entry for details.</div>
   </div>
 
   <div class="card"><h2>Today</h2><div class="stats" id="today"></div></div>
@@ -119,7 +158,7 @@
 </main>
 <script>
 const LOW = 70, HIGH = 180;
-let hours = 6, mealSort = 'recent', meals = [], aiAvailable = false;
+let hours = 6, mealSort = 'recent', meals = [], entries = [], aiAvailable = false;
 let plotted = [], plottedEvents = [], scaleX = null, scaleY = null;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
@@ -226,24 +265,104 @@ function renderInsulin(events) {
   $('insulin').textContent = rapid + long ? `💉 Today: ${fmtU(rapid)} u rapid · ${fmtU(long)} u long` : '';
 }
 
-function renderMeals() {
-  let list = meals.slice();
-  if (mealSort === 'recent') list.reverse();
-  else list = list.filter(m => m.impact).sort((a, b) => mealSort === 'best' ? b.impact.score - a.impact.score : a.impact.score - b.impact.score);
-  document.querySelectorAll('[data-sort]').forEach(b => b.style.fontWeight = b.dataset.sort === mealSort ? '700' : '400');
-  if (!list.length) { $('mealList').innerHTML = '<span class="muted small">No meals logged yet.</span>'; return; }
-  $('mealList').innerHTML = list.map(m => {
-    const i = m.impact;
-    const when = new Date(m.timestamp).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-    const bits = [when, m.carbs != null ? `${Math.round(m.carbs)} g` : null,
-      i ? `+${i.rise} peak at ${i.minutesToPeak} min` : null,
-      i && i.minutesAboveHigh ? `${i.minutesAboveHigh} min above` : null].filter(Boolean).join(' · ');
-    const sc = i ? `<div class="score" style="color:${i.score >= 80 ? 'var(--ok)' : i.score >= 50 ? 'var(--high)' : 'var(--low)'}">${i.score}${i.complete ? '' : '<small>so far</small>'}</div>` : '<div class="score muted">–</div>';
-    const img = m.photo ? `<img src="${m.photo}" alt="" loading="lazy">` : '<div class="ph">🍽</div>';
-    return `<div class="meal">${img}<div class="info"><div class="name">${esc(m.note || 'Meal')}</div><div class="muted small">${bits}</div></div>${sc}</div>`;
-  }).join('');
+const VERDICTS = { ok: ['Dose about right', 'var(--ok)'], tooLittle: ['Dose too low', 'var(--high)'], tooMuch: ['Dose too high', 'var(--high)'] };
+let jFilter = 'all', expanded = null, showAll = false;
+const openDays = new Set(), closedDays = new Set();
+const dayKey = t => new Date(t).toDateString();
+function dayName(key) {
+  const d = new Date(key), today = new Date(), y = new Date(); y.setDate(today.getDate() - 1);
+  if (key === today.toDateString()) return 'Today';
+  if (key === y.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
 }
-document.querySelectorAll('[data-sort]').forEach(b => b.onclick = () => { mealSort = b.dataset.sort; renderMeals(); });
+function dayTotals(list) {
+  let carbs = 0, rapid = 0, long = 0;
+  for (const e of list) {
+    if (e.kind === 'meal') carbs += e.carbs || 0;
+    else if (e.insulinType === 'long') long += e.units || 0; else rapid += e.units || 0;
+  }
+  return [carbs ? `${Math.round(carbs)} g` : null, rapid ? `${fmtU(rapid)} u rapid` : null, long ? `${fmtU(long)} u long` : null].filter(Boolean).join(' · ');
+}
+function entryHTML(e, byId, withDay) {
+  const m = byId[e.id], i = m && m.impact, d = m && m.dose;
+  const when = new Date(e.timestamp).toLocaleString([], withDay ? { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
+  const open = expanded === e.id ? ' open' : '';
+  const actions = `<div class="entry-actions"><button class="btn" data-edit="${e.id}">Edit</button><button class="btn danger" data-del="${e.id}">Delete</button></div>`;
+  if (e.kind !== 'meal') {
+    const name = `${fmtU(e.units || 0)} u ${e.insulinType === 'long' ? 'long-acting' : 'rapid'}`;
+    return `<div class="entry${open}" data-id="${e.id}"><div class="row"><div class="thumb insulin">💉</div><div class="info"><div class="name">${name}</div>`
+      + `<div class="muted small">${[when, esc(e.note)].filter(Boolean).join(' · ')}</div></div></div><div class="more">${actions}</div></div>`;
+  }
+  const sc = i ? (i.foodScore ?? i.score) : null;
+  const v = d && VERDICTS[d.verdict];
+  const badge = sc != null
+    ? `<div class="score" style="color:${sc >= 80 ? 'var(--ok)' : sc >= 50 ? 'var(--high)' : 'var(--low)'}">${sc}<small style="color:${v ? v[1] : 'var(--muted)'}">${v ? v[0] : i.complete ? '' : 'so far'}</small></div>`
+    : '';
+  const bits = [when, e.carbs != null ? `${Math.round(e.carbs)} g` : null, d && d.units ? `${fmtU(d.units)} u` : null].filter(Boolean).join(' · ');
+  const img = e.photo ? `<img class="thumb" src="${e.photo}" alt="" loading="lazy">` : '<div class="thumb meal">🍽</div>';
+  const facts = [];
+  if (i) {
+    facts.push(`Rose ${i.earlyRise ?? i.rise} in the first 90 min, peak ${i.peak} after ${i.minutesToPeak} min`);
+    if (i.minutesAboveHigh) facts.push(`${i.minutesAboveHigh} min above range`);
+  }
+  if (d) {
+    if (d.units) facts.push(`${fmtU(d.units)} u rapid${d.minutesFromMeal == null || Math.abs(d.minutesFromMeal) < 3 ? ' when eating' : d.minutesFromMeal < 0 ? `, ${-d.minutesFromMeal} min before eating` : `, ${d.minutesFromMeal} min after eating`}`);
+    if (d.reason) facts.push(`${v ? `<b style="color:${v[1]}">${v[0]}:</b> ` : ''}${esc(d.reason)}`);
+    if (d.suggested != null) facts.push(`Your usual ratio: ${fmtU(d.suggested)} u for ${Math.round(d.carbs)} g`);
+  }
+  return `<div class="entry${open}" data-id="${e.id}"><div class="row">${img}<div class="info"><div class="name">${esc(e.note || 'Meal')}</div><div class="muted small">${bits}</div></div>${badge}</div>`
+    + `<div class="more"><div class="facts">${facts.map(f => `<div>${f}</div>`).join('')}</div>${actions}</div></div>`;
+}
+function renderMeals() {
+  const byId = Object.fromEntries(meals.map(m => [m.id, m]));
+  const score = e => byId[e.id] && byId[e.id].impact ? (byId[e.id].impact.foodScore ?? byId[e.id].impact.score) : null;
+  document.querySelectorAll('[data-filter]').forEach(b => b.classList.toggle('on', b.dataset.filter === jFilter));
+  $('jsort').value = mealSort;
+  let list = entries.filter(e => jFilter === 'all' || e.kind === jFilter);
+  let html;
+  if (mealSort === 'recent') {
+    const days = new Map();
+    for (const e of list.slice().reverse()) {
+      const k = dayKey(e.timestamp);
+      if (!days.has(k)) days.set(k, []);
+      days.get(k).push(e);
+    }
+    html = [...days].map(([k, es], idx) => {
+      const open = openDays.has(k) || (idx < 2 && !closedDays.has(k));
+      return `<details class="day" data-day="${esc(k)}"${open ? ' open' : ''}><summary><span class="day-name">${dayName(k)}</span><span class="totals">${dayTotals(es)}</span></summary>`
+        + es.map(e => entryHTML(e, byId, false)).join('') + '</details>';
+    }).join('');
+  } else {
+    list = list.filter(e => score(e) != null).sort((a, b) => mealSort === 'best' ? score(b) - score(a) : score(a) - score(b));
+    const shown = showAll ? list : list.slice(0, 10);
+    html = shown.map(e => entryHTML(e, byId, true)).join('')
+      + (list.length > shown.length ? `<button class="linkbtn showall" id="showAll">Show all ${list.length} meals</button>` : '');
+  }
+  $('mealList').innerHTML = html || '<span class="muted small">Nothing logged yet.</span>';
+  if ($('showAll')) $('showAll').onclick = () => { showAll = true; renderMeals(); };
+  document.querySelectorAll('details.day').forEach(dt => dt.ontoggle = () => {
+    const k = dt.dataset.day;
+    if (dt.open) { openDays.add(k); closedDays.delete(k); } else { closedDays.add(k); openDays.delete(k); }
+  });
+  document.querySelectorAll('.entry').forEach(el => el.onclick = ev => {
+    if (ev.target.closest('button')) return;
+    const id = Number(el.dataset.id);
+    expanded = expanded === id ? null : id;
+    document.querySelectorAll('.entry').forEach(x => x.classList.toggle('open', Number(x.dataset.id) === expanded));
+  });
+  document.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => startEdit(entries.find(e => e.id == b.dataset.edit)));
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => deleteEntry(entries.find(e => e.id == b.dataset.del)));
+}
+document.querySelectorAll('[data-filter]').forEach(b => b.onclick = () => {
+  jFilter = b.dataset.filter;
+  if (jFilter !== 'meal') mealSort = 'recent';
+  renderMeals();
+});
+$('jsort').onchange = () => {
+  mealSort = $('jsort').value; showAll = false;
+  if (mealSort !== 'recent') jFilter = 'meal';
+  renderMeals();
+};
 
 function markdown(md) {
   const out = []; let inList = false;
@@ -284,18 +403,88 @@ $('genSummary').onclick = async () => {
 };
 
 // --- logging ---
-let kind = 'meal', photoData = null, lastEstimate = null;
-function resetTime() {
-  const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+let kind = 'meal', photoData = null, lastEstimate = null, editing = null, removePhoto = false, doseTimer = null;
+function setTime(date) {
+  const d = new Date(date); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   $('time').value = d.toISOString().slice(0, 16);
 }
+function resetTime() { setTime(new Date()); }
 resetTime();
-document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => {
-  kind = b.dataset.kind;
-  document.querySelectorAll('[data-kind]').forEach(x => x.classList.toggle('on', x === b));
+function setKind(k) {
+  kind = k;
+  document.querySelectorAll('[data-kind]').forEach(x => x.classList.toggle('on', x.dataset.kind === k));
   $('mealForm').style.display = kind === 'meal' ? '' : 'none';
   $('insulinForm').style.display = kind === 'insulin' ? '' : 'none';
-});
+}
+document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => { if (!editing) setKind(b.dataset.kind); });
+
+function resetForm() {
+  ['mealNote', 'carbs', 'insNote', 'photo'].forEach(id => $(id).value = '');
+  $('units').value = 1; $('itype').value = 'rapid';
+  photoData = null; lastEstimate = null; removePhoto = false; editing = null;
+  $('preview').style.display = 'none'; $('estimateResult').textContent = '';
+  $('logTitle').textContent = 'Log'; $('cancelEdit').style.display = 'none'; $('deleteEntry').style.display = 'none';
+  $('alsoDose').checked = false;
+  document.querySelectorAll('[data-kind]').forEach(x => x.disabled = false);
+  resetTime(); updateDose();
+}
+function startEdit(e) {
+  resetForm();
+  editing = e;
+  setKind(e.kind);
+  document.querySelectorAll('[data-kind]').forEach(x => x.disabled = true);
+  $('logTitle').textContent = e.kind === 'meal' ? 'Edit meal' : 'Edit insulin';
+  $('cancelEdit').style.display = ''; $('deleteEntry').style.display = '';
+  setTime(e.timestamp);
+  if (e.kind === 'meal') {
+    $('mealNote').value = e.note || ''; $('carbs').value = e.carbs ?? '';
+    if (e.photo) { $('preview').src = e.photo; $('preview').style.display = 'block'; }
+  } else {
+    $('units').value = e.units; $('itype').value = e.insulinType || 'rapid'; $('insNote').value = e.note || '';
+  }
+  updateDose();
+  $('log').scrollIntoView({ behavior: 'smooth' });
+}
+$('cancelEdit').onclick = resetForm;
+async function deleteEntry(e) {
+  if (!e || !confirm(`Delete ${e.kind === 'meal' ? '“' + (e.note || 'meal') + '”' : fmtU(e.units) + ' u insulin'}? This can't be undone.`)) return;
+  await fetch(`/events/${e.id}`, { method: 'DELETE' });
+  if (editing && editing.id === e.id) resetForm();
+  load();
+}
+$('deleteEntry').onclick = () => deleteEntry(editing);
+
+// Dose suggestion for a new meal eaten now
+function updateDose() {
+  clearTimeout(doseTimer);
+  const carbs = Number($('carbs').value);
+  const now = Math.abs(new Date($('time').value) - Date.now()) < 30 * 60e3;
+  const show = !editing && kind === 'meal';
+  $('alsoDoseRow').style.display = show ? '' : 'none';
+  if (!show || !now || !(carbs > 0)) { $('doseBox').style.display = 'none'; return; }
+  doseTimer = setTimeout(async () => {
+    try {
+      const r = await fetch(`/dose?carbs=${carbs}&target=120&low=${LOW}`);
+      const s = await r.json();
+      if (!r.ok) throw new Error(s.error);
+      const u = x => `${x >= 0 ? '+' : '−'}${fmtU(Math.abs(x))} u`;
+      const rows = [[`${Math.round(carbs)} g at 1 u per ${s.periodCarbRatio} g (${s.period})`, s.carbUnits]];
+      if (s.glucose != null) rows.push([`Now ${s.glucose}, target ${s.target}, 1 u per ${s.sensitivity}`, s.correctionUnits]);
+      if (s.trendUnits) rows.push(['Where the trend is heading in 30 min', s.trendUnits]);
+      if (s.activeDeducted > 0) rows.push([`Insulin still active: ${fmtU(s.activeInsulin)} u, less what ${s.carbsOnBoard} g still digesting needs`, -s.activeDeducted]);
+      const basis = s.meals < 3 ? `Mostly the usual rules for your ${fmtU(s.dailyDose)} u a day, until more meals are logged` : `Learned from ${s.meals} meals over ${Math.round(s.days)} days`;
+      $('doseBox').innerHTML = `Suggested rapid insulin: <b>${fmtU(s.units)} u</b><div class="muted small">${basis}</div>`
+        + (s.warning ? `<div class="warn small">${esc(s.warning)}</div>` : '')
+        + `<details><summary class="small">How it's worked out</summary><table>${rows.map(([l, v]) => `<tr><td class="muted">${esc(l)}</td><td>${u(v)}</td></tr>`).join('')}<tr><td class="muted">Rounded down to the nearest half unit</td><td><b style="font-size:13px">${fmtU(s.units)} u</b></td></tr></table></details>`
+        + '<div class="muted small" style="margin-top:6px">An estimate from your own logs, not medical advice.</div>';
+      $('doseBox').style.display = '';
+      if (!$('alsoDose').checked) $('doseUnits').value = s.units;
+    } catch (e) { $('doseBox').innerHTML = `<span class="muted small">${esc(e.message)}</span>`; $('doseBox').style.display = ''; }
+  }, 400);
+}
+$('carbs').oninput = updateDose;
+$('time').onchange = updateDose;
+updateDose();
 
 $('photo').onchange = () => {
   const file = $('photo').files[0];
@@ -324,6 +513,7 @@ $('estimate').onclick = async () => {
     if (!r.ok) throw new Error(est.error);
     lastEstimate = est;
     $('carbs').value = Math.round(est.carbs);
+    updateDose();
     if (!text) $('mealNote').value = est.description;
     $('estimateResult').innerHTML = est.items.map(i => `${esc(i.name)}: ${Math.round(i.carbs)} g`).join('<br>')
       + `<br>Confidence: ${esc(est.confidence)}${est.note ? ' · ' + esc(est.note) : ''}`;
@@ -332,23 +522,28 @@ $('estimate').onclick = async () => {
 };
 
 $('save').onclick = async () => {
-  const body = { kind, timestamp: new Date($('time').value).toISOString() };
+  const body = { timestamp: new Date($('time').value).toISOString() };
   if (kind === 'meal') {
-    Object.assign(body, { note: $('mealNote').value.trim() || null, carbs: $('carbs').value ? Number($('carbs').value) : null,
-                          photo: photoData, mediaType: 'image/jpeg', estimate: lastEstimate });
-    if (!body.note && body.carbs == null && !photoData) { $('saveMsg').textContent = 'Add a photo, description or carbs.'; return; }
+    Object.assign(body, { note: $('mealNote').value.trim() || null, carbs: $('carbs').value ? Number($('carbs').value) : null });
+    if (photoData) Object.assign(body, { photo: photoData, mediaType: 'image/jpeg' });
+    if (lastEstimate) body.estimate = lastEstimate;
+    if (!body.note && body.carbs == null && !photoData && !(editing && editing.photo)) { $('saveMsg').textContent = 'Add a photo, description or carbs.'; return; }
   } else {
     Object.assign(body, { units: Number($('units').value), insulinType: $('itype').value, note: $('insNote').value.trim() || null });
     if (!(body.units > 0)) { $('saveMsg').textContent = 'Enter the units.'; return; }
   }
   $('save').disabled = true;
   try {
-    const r = await fetch('/events', { method: 'POST', body: JSON.stringify(body) });
+    const r = editing
+      ? await fetch(`/events/${editing.id}`, { method: 'PATCH', body: JSON.stringify(body) })
+      : await fetch('/events', { method: 'POST', body: JSON.stringify({ kind, ...body }) });
     if (!r.ok) throw new Error((await r.json()).error);
+    const dose = Number($('doseUnits').value);
+    if (!editing && kind === 'meal' && $('alsoDose').checked && dose > 0) {
+      await fetch('/events', { method: 'POST', body: JSON.stringify({ kind: 'insulin', timestamp: body.timestamp, units: dose, insulinType: 'rapid' }) });
+    }
     $('saveMsg').textContent = 'Saved ✓';
-    ['mealNote', 'carbs', 'insNote', 'photo'].forEach(id => $(id).value = '');
-    photoData = null; lastEstimate = null; $('preview').style.display = 'none'; $('estimateResult').textContent = '';
-    resetTime();
+    resetForm();
     load();
     setTimeout(() => $('saveMsg').textContent = '', 3000);
   } catch (e) { $('saveMsg').textContent = e.message; }
@@ -375,7 +570,8 @@ async function load() {
     $('estimate').title = g.aiAvailable ? '' : 'Claude is unavailable on the Mac';
     const st = await (await fetch(`/stats?low=${LOW}&high=${HIGH}`)).json();
     statBlock('today', st.today); statBlock('week', st.week);
-    meals = await (await fetch(`/meals?days=30&high=${HIGH}`)).json();
+    meals = await (await fetch(`/meals?days=30&low=${LOW}&high=${HIGH}`)).json();
+    entries = await (await fetch('/events?hours=720')).json();
     renderMeals();
   } catch (e) {
     $('when').textContent = 'Server unreachable';

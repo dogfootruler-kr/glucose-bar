@@ -21,72 +21,151 @@ struct SettingsView: View {
     @State private var shareOnLAN = ServerConfig.lan
     @AppStorage("serverURL") private var serverURL = ""
 
+    @AppStorage("doseTarget") private var doseTarget = 120
+    @State private var learned: DoseSuggestion?
+    @State private var learnedError: String?
+
     var body: some View {
         TabView {
             Form {
-                Picker("Units", selection: $useMmol) {
-                    Text("mg/dL").tag(false)
-                    Text("mmol/L").tag(true)
-                }
-                glucoseStepper("Target low", $targetLow, 50...targetHigh - 10)
-                glucoseStepper("Target high", $targetHigh, targetLow + 10...300)
-                Picker("Sensor lifetime", selection: $sensorDays) {
-                    Text("14 days").tag(14)
-                    Text("15 days (Libre 3 Plus)").tag(15)
-                }
-                Toggle("Open at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, on in
-                        try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                Section {
+                    Picker("Units", selection: $useMmol) {
+                        Text("mg/dL").tag(false)
+                        Text("mmol/L").tag(true)
                     }
+                    glucoseStepper("Target low", $targetLow, 50...targetHigh - 10)
+                    glucoseStepper("Target high", $targetHigh, targetLow + 10...300)
+                } header: {
+                    Text("Glucose")
+                } footer: {
+                    Text("Used for time in range, colours and meal scores.")
+                }
+                Section("Sensor") {
+                    Picker("Sensor lifetime", selection: $sensorDays) {
+                        Text("14 days").tag(14)
+                        Text("15 days (Libre 3 Plus)").tag(15)
+                    }
+                }
+                Section {
+                    Toggle("Open at login", isOn: $launchAtLogin)
+                        .onChange(of: launchAtLogin) { _, on in
+                            try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                        }
+                }
             }
-            .tabItem { Label("General", systemImage: "gear") }
+            .tabItem { Label("General", systemImage: "gearshape") }
 
             Form {
-                Toggle("Show change since 5 min ago (+8)", isOn: $showDelta)
-                Toggle("Show trend line", isOn: $showSparkline)
-                Picker("Trend line covers", selection: $sparklineHours) {
-                    ForEach(1...3, id: \.self) { Text("\($0) h").tag($0) }
+                Section {
+                    Toggle("Show change since 5 min ago", isOn: $showDelta)
+                    Toggle("Show trend line", isOn: $showSparkline)
+                    Picker("Trend line covers", selection: $sparklineHours) {
+                        ForEach(1...3, id: \.self) { Text("\($0) hour\($0 == 1 ? "" : "s")").tag($0) }
+                    }
+                    .disabled(!showSparkline)
+                } header: {
+                    Text("Menu Bar")
                 }
-                .disabled(!showSparkline)
-                Toggle("Only show a coloured dot when in range", isOn: $dotWhenInRange)
+                Section {
+                    Toggle("Only show a coloured dot when in range", isOn: $dotWhenInRange)
+                } footer: {
+                    Text("The value comes back as soon as glucose leaves the target range.")
+                }
             }
             .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
 
             Form {
-                Toggle("Enable alerts", isOn: $alertsEnabled)
-                Group {
+                Section {
+                    Toggle("Enable alerts", isOn: $alertsEnabled)
+                }
+                Section("Glucose") {
                     glucoseStepper("Low alert at or below", $alertLow, 40...150)
                     glucoseStepper("High alert at or above", $alertHigh, 150...400)
-                    Toggle("Alert when dropping fast below \(store.format(100))", isOn: $alertFastDrop)
-                    Toggle("Alert when the trend will reach your low alert within 20 min", isOn: $alertPredictedLow)
-                    Stepper("No-data alert after \(staleMinutes) min", value: $staleMinutes, in: 10...60, step: 5)
+                    Toggle("Dropping fast below \(store.format(100))", isOn: $alertFastDrop)
+                    Toggle("Heading low within 20 minutes", isOn: $alertPredictedLow)
                 }
                 .disabled(!alertsEnabled)
-                Button("Send test notification") { store.alerts.sendTest() }
+                Section {
+                    Stepper("No data for \(staleMinutes) minutes", value: $staleMinutes, in: 10...60, step: 5)
+                } header: {
+                    Text("Sensor")
+                } footer: {
+                    Text("Alerts repeat every 20 minutes while the condition lasts.")
+                }
+                .disabled(!alertsEnabled)
+                Section {
+                    Button("Send Test Notification") { store.alerts.sendTest() }
+                }
             }
-            .tabItem { Label("Alerts", systemImage: "bell") }
+            .tabItem { Label("Alerts", systemImage: "bell.badge") }
 
             Form {
-                TextField("Server address", text: $serverURL, prompt: Text(GlucoseStore.localServer))
-                    .onSubmit { Task { await store.refresh() } }
-                Text("Leave empty to use the server on this Mac, or enter another Mac's address, such as http://glucose-work.<tailnet>.ts.net:8765")
-                    .font(.caption).foregroundStyle(.secondary)
-                if !GlucoseStore.isRemote {
-                    Toggle("Share web page on local network", isOn: $shareOnLAN)
-                        .onChange(of: shareOnLAN) { _, on in ServerConfig.setLAN(on) }
-                    Text(shareOnLAN
-                         ? "Anyone on your Wi-Fi can open http://\(ProcessInfo.processInfo.hostName):8765 and see your glucose."
-                         : "The web page is only reachable on this Mac: http://localhost:8765")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                Section {
+                    glucoseStepper("Correct towards", $doseTarget, 80...180)
+                } header: {
+                    Text("Dose Suggestions")
+                } footer: {
+                    Text("Suggestions add or remove insulin to bring glucose to this level. They're estimates from your own logs, not medical advice.")
                 }
-                Button("Open web page") { store.openWebPage() }
-                Button("Export all readings as CSV…") { store.exportCSV() }
+                Section {
+                    if let s = learned {
+                        LabeledContent("Carb ratio", value: "1 u per \(formatUnits(s.carbRatio)) g")
+                        ForEach(["morning", "midday", "evening"], id: \.self) { period in
+                            if let p = s.byTime[period] {
+                                LabeledContent("  \(period.capitalized)", value: "1 u per \(formatUnits(p.carbRatio)) g · \(p.meals) meal\(p.meals == 1 ? "" : "s")")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        LabeledContent("Correction", value: "1 u lowers about \(store.format(s.sensitivity)) \(useMmol ? "mmol/L" : "mg/dL")")
+                        LabeledContent("Daily insulin", value: "\(formatUnits(s.dailyDose)) u on average")
+                    } else if let learnedError {
+                        Text(learnedError).foregroundStyle(.secondary)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                } header: {
+                    Text("Learned from Your History")
+                } footer: {
+                    if let s = learned {
+                        Text("From \(s.meals) meal\(s.meals == 1 ? "" : "s") and \(s.corrections) correction dose\(s.corrections == 1 ? "" : "s") over the last \(Int(s.days.rounded())) days, blended with the usual rules for your daily dose (1 u per \(formatUnits(s.rulesCarbRatio)) g, 1 u per \(store.format(s.rulesSensitivity))). The more you log, the more it follows your own data.")
+                    }
+                }
+            }
+            .tabItem { Label("Insulin", systemImage: "syringe") }
+            .task {
+                do { learned = try await store.doseSuggestion(carbs: 0) } catch { learnedError = error.localizedDescription }
+            }
+
+            Form {
+                Section {
+                    TextField("Server address", text: $serverURL, prompt: Text(GlucoseStore.localServer))
+                        .onSubmit { Task { await store.refresh() } }
+                } header: {
+                    Text("Server")
+                } footer: {
+                    Text("Leave empty to use the server on this Mac, or enter another Mac's address, such as http://glucose-work.<tailnet>.ts.net:8765")
+                }
+                if !GlucoseStore.isRemote {
+                    Section {
+                        Toggle("Share web page on local network", isOn: $shareOnLAN)
+                            .onChange(of: shareOnLAN) { _, on in ServerConfig.setLAN(on) }
+                    } footer: {
+                        Text(shareOnLAN
+                             ? "Anyone on your Wi-Fi can open http://\(ProcessInfo.processInfo.hostName):8765 and see your glucose."
+                             : "The web page is only reachable on this Mac: http://localhost:8765")
+                            .textSelection(.enabled)
+                    }
+                }
+                Section {
+                    Button("Open Web Page") { store.openWebPage() }
+                    Button("Export All Readings as CSV…") { store.exportCSV() }
+                }
             }
             .tabItem { Label("Server", systemImage: "server.rack") }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 340)
+        .frame(width: 500, height: 460)
+        .activatesWindow("settings")
     }
 
     private func glucoseStepper(_ label: String, _ value: Binding<Int>, _ range: ClosedRange<Int>) -> some View {
