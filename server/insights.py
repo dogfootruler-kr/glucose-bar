@@ -1,6 +1,8 @@
 """Derived data: short-term forecast, meal impact and the weekly data digest."""
 from datetime import datetime, timedelta
 
+import exercise
+
 FORECAST_WINDOW = 20 * 60   # seconds of history used for the trend
 FORECAST_MINUTES = 30
 MEAL_WINDOW = 3 * 3600
@@ -31,8 +33,18 @@ def forecast(readings):
     return {"slope": round(slope, 2), "from": last, "fromTs": last_ts, "points": points}
 
 
-def meal_impact(meal_ts, readings, high, now):
-    """How glucose responded in the 3 hours after a meal. readings: [(ts, mgdl)] covering the window."""
+def _above(after, high):
+    """Seconds above high, counting at most 15 minutes per gap between readings."""
+    return sum(min(t1 - t0, 15 * 60) for (t0, v0), (t1, _) in zip(after, after[1:]) if v0 > high)
+
+
+def meal_impact(meal_ts, readings, high, now, fx=None):
+    """How glucose responded in the 3 hours after a meal. readings: [(ts, mgdl)] covering the window.
+
+    fx: exercise effects (dosing.NoExercise). The scores use glucose as it would have been without
+    the exercise, so a walk after eating doesn't make the food look better than it was; the other
+    numbers are what the sensor read.
+    """
     before = [(abs(ts - meal_ts), v) for ts, v in readings if meal_ts - 15 * 60 <= ts <= meal_ts + 10 * 60]
     after = [(ts, v) for ts, v in readings if meal_ts <= ts <= meal_ts + MEAL_WINDOW]
     if not before or len(after) < 3:
@@ -40,19 +52,17 @@ def meal_impact(meal_ts, readings, high, now):
     baseline = min(before)[1]
     peak_ts, peak = max(after, key=lambda r: r[1])
     rise = max(0, peak - baseline)
-
-    above = 0
-    for (t0, v0), (t1, _) in zip(after, after[1:]):
-        if v0 > high:
-            above += min(t1 - t0, 15 * 60)
+    above = _above(after, high)
     back = next((ts for ts, v in after if ts > peak_ts and v <= baseline + 20), None)
 
-    score = 100 - max(0, rise - 30) * 0.6 - (above / 60) * 0.15
+    adjusted = fx.adjust(after, meal_ts) if fx else after
+    score = 100 - max(0, max(v for _, v in adjusted) - baseline - 30) * 0.6 - (_above(adjusted, high) / 60) * 0.15
     # The first 90 minutes mostly reflect the food (and how early the insulin went in); what
     # happens after mostly reflects whether the dose was right, so the food score ignores it.
-    early = [v for ts, v in after if ts <= meal_ts + EARLY_WINDOW] or [baseline]
+    early = [v for ts, v in adjusted if ts <= meal_ts + EARLY_WINDOW] or [baseline]
     early_rise = max(0, max(early) - baseline)
     food_score = 100 - max(0, early_rise - 30) * 0.6
+    exercised = round(fx.lowered(meal_ts, meal_ts + EARLY_WINDOW)) if fx else 0
     return {
         "baseline": baseline,
         "peak": peak,
@@ -63,6 +73,7 @@ def meal_impact(meal_ts, readings, high, now):
         "score": int(max(0, min(100, round(score)))),
         "earlyRise": early_rise,
         "foodScore": int(max(0, min(100, round(food_score)))),
+        "exerciseEffect": exercised if abs(exercised) >= 10 else None,
         "complete": now >= meal_ts + MEAL_WINDOW,
     }
 
@@ -81,8 +92,8 @@ def _stats(vals, low, high):
     }
 
 
-def _episodes(readings, test, min_minutes=15):
-    """Contiguous runs where test(value) holds for at least min_minutes."""
+def _episodes(readings, test, min_minutes=15, tag=None):
+    """Contiguous runs where test(value) holds for at least min_minutes. tag(start ts) adds "afterExercise"."""
     out, start, worst = [], None, None
     for ts, v in readings + [(None, None)]:
         if ts is not None and test(v):
@@ -93,12 +104,14 @@ def _episodes(readings, test, min_minutes=15):
             if end - start >= min_minutes * 60:
                 out.append({"start": datetime.fromtimestamp(start).strftime("%a %H:%M"),
                             "minutes": round((end - start) / 60), "extreme": worst})
+                if tag and tag(start):
+                    out[-1]["afterExercise"] = tag(start)
             start, worst = None, None
     return out
 
 
-def weekly_digest(readings, prev_readings, events, meals, low, high, start, end):
-    """Compact numbers for the weekly summary prompt. Times are local."""
+def weekly_digest(readings, prev_readings, events, meals, low, high, start, end, sessions=()):
+    """Compact numbers for the weekly summary prompt. Times are local. sessions: past exercise with "impact"."""
     days = {}
     hours = {h: [] for h in range(24)}
     for ts, v in readings:
@@ -121,7 +134,8 @@ def weekly_digest(readings, prev_readings, events, meals, low, high, start, end)
         "previousWeek": _stats([v for _, v in prev_readings], low, high),
         "byDay": {d: _stats(v, low, high) for d, v in days.items()},
         "averageByHour": {f"{h:02d}:00": round(sum(v) / len(v)) for h, v in hours.items() if v},
-        "lowEpisodes": _episodes(readings, lambda v: v < low),
+        "lowEpisodes": _episodes(readings, lambda v: v < low, tag=lambda ts: next(
+            (exercise.label(e) for e in reversed(sessions) if exercise.ends_at(e) <= ts <= exercise.ends_at(e) + 12 * 3600), None)),
         "highEpisodes": _episodes(readings, lambda v: v > 250, 30),
         "insulinByDay": insulin,
         "meals": [{
@@ -136,7 +150,10 @@ def weekly_digest(readings, prev_readings, events, meals, low, high, start, end)
             "insulinMinutesFromMeal": (m.get("dose") or {}).get("minutesFromMeal"),
             "doseVerdict": (m.get("dose") or {}).get("verdict"),
             "doseNote": (m.get("dose") or {}).get("reason"),
+            "exercise": (m.get("exercise") or {}).get("items"),
+            "exerciseLoweredGlucoseBy": (m.get("exercise") or {}).get("effect"),
         } for m in meals],
+        "exercise": exercise.digest(sessions),
     }
 
 

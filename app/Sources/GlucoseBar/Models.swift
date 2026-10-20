@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 struct Reading: Decodable {
     let mgdl: Int
@@ -46,22 +46,77 @@ struct GlucoseEvent: Decodable, Identifiable, Hashable {
     let note: String?
     let photo: String?
     let estimate: MealEstimate?
+    let activity: String?
+    let minutes: Double?
+    let intensity: String?
 
     var isMeal: Bool { kind == "meal" }
-    var isRapid: Bool { !isMeal && insulinType != "long" }
+    var isInsulin: Bool { kind == "insulin" }
+    var isExercise: Bool { kind == "exercise" }
+    var isRapid: Bool { isInsulin && insulinType != "long" }
+    var isLong: Bool { isInsulin && insulinType == "long" }
+    /// Exercise logged ahead of time that hasn't started yet.
+    var isPlanned: Bool { isExercise && timestamp > Date() }
+    var end: Date { timestamp.addingTimeInterval((minutes ?? 0) * 60) }
+    var exerciseActivity: Activity { Activity(rawValue: activity ?? "") ?? .other }
 
     var title: String {
-        if isMeal { return note ?? "Meal" }
-        return "\(formatUnits(units ?? 0)) u \(insulinType == "long" ? "long-acting" : "rapid")"
+        switch kind {
+        case "meal": note ?? "Meal"
+        case "exercise": "\(exerciseActivity.name) · \(formatMinutes(minutes ?? 0))"
+        default: "\(formatUnits(units ?? 0)) u \(insulinType == "long" ? "long-acting" : "rapid")"
+        }
     }
 
     var label: String {
-        if isMeal {
-            return [note, carbs.map { "\(Int($0)) g carbs" }].compactMap { $0 }.joined(separator: " · ")
+        switch kind {
+        case "meal":
+            [note, carbs.map { "\(Int($0)) g carbs" }].compactMap { $0 }.joined(separator: " · ")
+        case "exercise":
+            (isPlanned ? "Planned: " : "") + [title, intensity, note].compactMap { $0 }.joined(separator: " · ")
+        default:
+            "\(formatUnits(units ?? 0)) u \(insulinType ?? "rapid")" + (note.map { " · \($0)" } ?? "")
         }
-        return "\(formatUnits(units ?? 0)) u \(insulinType ?? "rapid")" + (note.map { " · \($0)" } ?? "")
+    }
+
+    /// What the chart shows above the entry's marker.
+    var shortLabel: String {
+        switch kind {
+        case "meal": "\(Int(carbs ?? 0))g"
+        case "exercise": "\(Int(minutes ?? 0))m"
+        default: "\(formatUnits(units ?? 0))u"
+        }
+    }
+
+    var symbol: String { isMeal ? "fork.knife" : isExercise ? exerciseActivity.symbol : "syringe.fill" }
+    var tint: Color { isMeal ? .orange : isExercise ? .teal : isRapid ? .purple : .indigo }
+}
+
+enum Activity: String, CaseIterable {
+    case walk, run, cycling, strength, swim, sport, other
+
+    var name: String {
+        switch self {
+        case .strength: "Strength"
+        case .other: "Exercise"
+        default: rawValue.capitalized
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .walk: "figure.walk"
+        case .run: "figure.run"
+        case .cycling: "figure.outdoor.cycle"
+        case .strength: "dumbbell.fill"
+        case .swim: "figure.pool.swim"
+        case .sport: "figure.tennis"
+        case .other: "figure.mixed.cardio"
+        }
     }
 }
+
+let intensities = ["light", "moderate", "hard"]
 
 struct MealImpact: Decodable {
     let baseline: Int
@@ -73,6 +128,8 @@ struct MealImpact: Decodable {
     let score: Int
     let earlyRise: Int?
     let foodScore: Int?
+    /// mg/dL exercise took off glucose in the first 90 minutes, when it was 10 or more.
+    let exerciseEffect: Int?
     let complete: Bool
 }
 
@@ -115,6 +172,7 @@ struct DoseSuggestion: Decodable {
     let carbRatio: Double
     let sensitivity: Int
     let byTime: [String: Period]
+    let exercise: ExerciseAdjustment?
     let rulesCarbRatio: Double
     let rulesSensitivity: Int
     let dailyDose: Double
@@ -133,10 +191,56 @@ struct Meal: Decodable, Identifiable, Hashable {
     let photo: String?
     let impact: MealImpact?
     let dose: MealDose?
+    let exercise: MealExercise?
 
     /// The score shown for a meal: how gently glucose rose in the first 90 minutes, which says more
     /// about the food than the later hours, when a wrong dose shows.
     var score: Int? { impact.map { $0.foodScore ?? $0.score } }
+}
+
+/// Exercise around a meal and how much it lowered glucose over the 3 hours after it.
+struct MealExercise: Decodable, Hashable {
+    let items: [String]
+    let effect: Int
+}
+
+/// How much less rapid insulin a meal needs because of exercise (see server/exercise.py).
+struct ExerciseAdjustment: Decodable {
+    let units: Double
+    let label: String
+    let warning: String?
+}
+
+/// How glucose responded to one exercise session, during it and in the 12 hours after.
+struct ExerciseImpact: Decodable, Hashable {
+    struct Low: Decodable, Hashable {
+        let mgdl: Int
+        let timestamp: Date
+        let minutesAfter: Int?  // lowAfter only
+    }
+    let startGlucose: Int?
+    let endGlucose: Int?
+    let change: Int?
+    let expectedDrop: Int
+    let exerciseDrop: Int?
+    let lowest: Low?
+    let lowAfter: Low?
+    let lowDuring: Bool
+    let inProgress: Bool
+    let complete: Bool
+}
+
+struct Exercise: Decodable, Identifiable {
+    let id: Int
+    let impact: ExerciseImpact?
+}
+
+/// Low alerts come earlier for a while after moderate or hard exercise.
+struct PostExercise: Decodable {
+    let until: Date
+    let label: String
+    let raise: Int
+    let lookahead: Int
 }
 
 struct MealEstimate: Codable, Hashable {
@@ -167,6 +271,7 @@ struct ServerState: Decodable {
     let history: [Point]
     let forecast: Forecast?
     let events: [GlucoseEvent]?
+    let postExercise: PostExercise?
     let aiAvailable: Bool?
     let error: String?
 }
@@ -215,4 +320,13 @@ func formatDelta(_ delta: Int, mmol: Bool) -> String {
 
 func formatUnits(_ u: Double) -> String {
     u == u.rounded() ? String(Int(u)) : String(format: "%.1f", u)
+}
+
+func formatMinutes(_ m: Double) -> String {
+    let m = Int(m.rounded())
+    return m < 60 ? "\(m) min" : "\(m / 60) h" + (m % 60 > 0 ? " \(m % 60) min" : "")
+}
+
+extension String {
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }

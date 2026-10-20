@@ -78,11 +78,15 @@ struct SettingsView: View {
                 Section {
                     Toggle("Enable alerts", isOn: $alertsEnabled)
                 }
-                Section("Glucose") {
+                Section {
                     glucoseStepper("Low alert at or below", $alertLow, 40...150)
                     glucoseStepper("High alert at or above", $alertHigh, 150...400)
                     Toggle("Dropping fast below \(store.format(100))", isOn: $alertFastDrop)
                     Toggle("Heading low within 20 minutes", isOn: $alertPredictedLow)
+                } header: {
+                    Text("Glucose")
+                } footer: {
+                    Text("For 4 to 6 hours after moderate or hard exercise (2 hours more after 90 minutes or longer), heading-low and dropping-fast alerts come earlier.")
                 }
                 .disabled(!alertsEnabled)
                 Section {

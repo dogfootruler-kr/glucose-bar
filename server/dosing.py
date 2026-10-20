@@ -6,6 +6,8 @@ divided by insulin absorbed, adjusted for where glucose ended relative to where 
 Correction doses taken away from meals do the same for sensitivity. The medians of those are
 blended with the rules of thumb, so a few meals move the numbers a little and many move them a lot.
 Absorption uses standard curves: carbs over 3 h, rapid insulin peaking at 75 min and lasting 6 h.
+Logged exercise is allowed for throughout (see exercise.py): the glucose it took off is added back
+before meals and doses are judged or learned from.
 
 This is an estimate from self-logged data, not medical advice.
 """
@@ -17,6 +19,26 @@ CARB_MINUTES = 180
 INSULIN_DIA = 360
 INSULIN_PEAK = 75
 MEAL_GROUP = 45 * 60      # meals this close together share one dose
+
+
+class NoExercise:
+    """What logged exercise did to glucose (exercise.Effects); this one stands for none."""
+    exercises = ()
+
+    def adjust(self, readings, t0):
+        """readings with the glucose exercise took off since t0 added back."""
+        return readings
+
+    def lowered(self, t0, t1):
+        """mg/dL exercise took off glucose between t0 and t1 (negative if it pushed it up)."""
+        return 0.0
+
+    def describe(self, t0, t1):
+        """Labels of the exercise that affected glucose between t0 and t1."""
+        return []
+
+
+NO_EXERCISE = NoExercise()
 
 
 def carbs_absorbed(minutes):
@@ -113,8 +135,11 @@ def meal_groups(meals):
     return groups
 
 
-def _corrections(readings, index, rapid, meals, low):
-    """mg/dL drop per unit for doses taken with no meal 2 h before to 3 h after."""
+def _corrections(readings, index, rapid, meals, low, fx=NO_EXERCISE):
+    """mg/dL drop per unit for doses taken with no meal 2 h before to 3 h after.
+
+    The part of the drop that exercise explains is taken out; doses where it explains most of it are skipped.
+    """
     out = []
     for e in rapid:
         t = e["ts"]
@@ -126,18 +151,23 @@ def _corrections(readings, index, rapid, meals, low):
         inside = [v for _, v in readings[_lo(index, t):_lo(index, t + 3 * 3600)]]
         if g0 is None or g1 is None or not inside or min(inside) < low:
             continue
+        exercised = fx.lowered(t, t + 3 * 3600)
+        if exercised > 25 and exercised > 0.5 * max(g0 - g1, 1):
+            continue
+        g1 += exercised
         absorbed = e["units"] * (1 - insulin_on_board(180))
         if g0 > g1:
             out.append((g0 - g1) / absorbed)
     return out
 
 
-def _meal_ratios(readings, index, rapid, meals, isf, low):
+def _meal_ratios(readings, index, rapid, meals, isf, low, fx=NO_EXERCISE):
     """Carb ratio implied by each meal: carbs absorbed / insulin it actually took.
 
     Insulin it took = insulin absorbed over the window, adjusted for where glucose ended up
     relative to where it started (ending higher means more was needed, at `isf` per unit).
     The window runs from the meal to 4 h later, or to the next meal or a low if sooner (at least 2 h).
+    Where glucose ended up counts what exercise took off as still there; meals where that's a lot are skipped.
     """
     out = []
     groups = meal_groups(meals)
@@ -154,6 +184,10 @@ def _meal_ratios(readings, index, rapid, meals, isf, low):
         g0, g1 = _reading_at(readings, index, start), _reading_at(readings, index, end)
         if g0 is None or g1 is None or g0 < low:
             continue
+        exercised = fx.lowered(start, end)
+        if abs(exercised) > 60:
+            continue
+        g1 += exercised
         carbs = _absorbed(meals, start, end, "carbs", carbs_absorbed)
         insulin = _absorbed(rapid, start, end, "units", lambda m: 1 - insulin_on_board(m))
         needed = insulin + (g1 - g0) / isf
@@ -171,11 +205,11 @@ def bucket(ts):
     return next(name for name, a, b in BUCKETS if a <= h < b)
 
 
-def fit(readings, events, low=70):
+def fit(readings, events, low=70, fx=NO_EXERCISE):
     """Carb ratio (g/u) and sensitivity (mg/dL per u) from history. readings: [(ts, mgdl)] sorted.
 
     Starts from the rules of thumb (500 and 1800 divided by the total daily dose) and moves towards
-    what the logged meals and correction doses show as they accumulate.
+    what the logged meals and correction doses show as they accumulate. fx: exercise effects to allow for.
     """
     rapid, meals = _rapid(events), _meals(events)
     tdd = daily_insulin(events)
@@ -184,9 +218,9 @@ def fit(readings, events, low=70):
     isf0, icr0 = 1800 / tdd, 500 / tdd
     index = [r[0] for r in readings]
 
-    corrections = _corrections(readings, index, rapid, meals, low)
+    corrections = _corrections(readings, index, rapid, meals, low, fx)
     isf = max(isf0 / 2, min(isf0 * 2, _shrink(corrections, isf0, 3)))
-    ratios = _meal_ratios(readings, index, rapid, meals, isf, low)
+    ratios = _meal_ratios(readings, index, rapid, meals, isf, low, fx)
     icr = _shrink([r["ratio"] for r in ratios], icr0, 3)
     by_time = {}
     for name, _, _ in BUCKETS:
@@ -209,11 +243,12 @@ def _lo(index, ts):
     return bisect.bisect_left(index, ts)
 
 
-def suggest(params, carbs, glucose, slope, events, now, target=120, low=70):
+def suggest(params, carbs, glucose, slope, events, now, target=120, low=70, exercise=None):
     """Rapid-insulin suggestion for `carbs` eaten now.
 
     glucose: latest mg/dL (None if unknown); slope: mg/dL per minute from the forecast (None if unknown).
     Insulin still active is subtracted, minus what the carbs still being absorbed will need.
+    exercise: optional function (carb units, correction units) -> {"units": less needed, ...} or None.
     """
     period = bucket(now)
     icr, isf = params["byTime"][period]["carbRatio"], params["sensitivity"]
@@ -225,7 +260,8 @@ def suggest(params, carbs, glucose, slope, events, now, target=120, low=70):
     carb_units = carbs / icr
     correction = (glucose - target) / isf if glucose is not None else 0.0
     trend = max(-60, min(60, slope * 30)) / isf if slope is not None and glucose is not None else 0.0
-    total = carb_units + correction + trend - active
+    ex = exercise(carb_units, correction) if exercise else None
+    total = carb_units + correction + trend - active - (ex["units"] if ex else 0)
 
     warning = None
     if glucose is not None and glucose < low:
@@ -247,11 +283,12 @@ def suggest(params, carbs, glucose, slope, events, now, target=120, low=70):
         "warning": warning,
         "period": period,
         "periodCarbRatio": icr,
+        "exercise": ex,
         **params,
     }
 
 
-def meal_dose(meal_ts, meals, insulin, readings, low, high, now, params=None):
+def meal_dose(meal_ts, meals, insulin, readings, low, high, now, params=None, fx=NO_EXERCISE):
     """How the rapid insulin around a meal worked out.
 
     meals/insulin: event dicts covering a few hours around the meal; readings: [(ts, mgdl)] from
@@ -260,7 +297,7 @@ def meal_dose(meal_ts, meals, insulin, readings, low, high, now, params=None):
     the next meal, within 3 h) as corrections.
 
     verdict: "ok", "tooLittle", "tooMuch", "none" (no insulin logged) or None (too early to tell,
-    or the next meal came too soon).
+    the next meal came too soon, or a low that exercise explains).
     """
     group = [m for m in meals if abs(m["ts"] - meal_ts) <= MEAL_GROUP]
     start, end_group = min(m["ts"] for m in group), max(m["ts"] for m in group)
@@ -289,25 +326,38 @@ def meal_dose(meal_ts, meals, insulin, readings, low, high, now, params=None):
         return out
 
     before = [(abs(ts - start), v) for ts, v in readings if start - 15 * 60 <= ts <= start + 10 * 60]
-    after = [(ts, v) for ts, v in readings if start <= ts <= horizon]
-    if not before or len(after) < 3:
+    raw = [(ts, v) for ts, v in readings if start <= ts <= horizon]
+    if not before or len(raw) < 3:
         return out
     baseline = min(before)[1]
     if baseline < low:
         out["reason"] = "Eaten while low"
         return out
-    low_hit = next(((ts, v) for ts, v in after if v < low and ts >= start + 30 * 60), None)
-    if low_hit:
-        out["verdict"] = "tooMuch"
-        out["reason"] = f"Went down to {low_hit[1]} at {datetime.fromtimestamp(low_hit[0]):%H:%M}"
+    # Judged on glucose as it would have been without exercise, so a drop the exercise explains
+    # isn't put down to the dose. The reasons quote what the sensor actually read.
+    after = fx.adjust(raw, start)
+    labels = fx.describe(start - 3600, horizon)
+    exercise = labels[0] if len(labels) == 1 else "exercise"
+    dip = next(((ts, v) for ts, v in raw if v < low and ts >= start + 30 * 60), None)
+    if dip:
+        went = f"Went down to {dip[1]} at {datetime.fromtimestamp(dip[0]):%H:%M}"
+        if any(v < low for ts, v in after if ts >= start + 30 * 60):
+            out["verdict"] = "tooMuch"
+            out["reason"] = went + (f", even allowing for the {exercise}" if after != raw else "")
+        else:
+            out["reason"] = f"{went}, which the {exercise} explains rather than the dose"
         return out
     if horizon - start < 2 * 3600:
         out["reason"] = "The next meal came too soon to judge the dose"
         return out
     if now < horizon:
         return out
-    end = after[-1][1]
+    end, raw_end = after[-1][1], raw[-1][1]
     hours = round((horizon - start) / 3600, 1)
+    effect = round(end - raw_end)
+    allowing = ""
+    if abs(effect) >= 10:
+        allowing = f", with the {exercise} {'taking' if effect > 0 else 'pushing'} it {'down' if effect > 0 else 'up'} about {abs(effect)}"
     # Starting high, a good dose also brings glucose down; starting in range, it returns there.
     expected = min(baseline, high)
     if later:
@@ -315,13 +365,13 @@ def meal_dose(meal_ts, meals, insulin, readings, low, high, now, params=None):
         out["reason"] = f"Needed {_fmt(out['laterUnits'])} u more later"
     elif end - expected > 60 or (end > high and end > baseline - 30):
         out["verdict"] = "tooLittle"
-        out["reason"] = f"Still at {end} after {_fmt(hours)} h, from {baseline} before the meal"
+        out["reason"] = f"Still at {raw_end} after {_fmt(hours)} h, from {baseline} before the meal{allowing}"
     elif end < min(baseline, 120) - 40:
         out["verdict"] = "tooMuch"
-        out["reason"] = f"Down to {end} after {_fmt(hours)} h, from {baseline} before the meal"
+        out["reason"] = f"Down to {raw_end} after {_fmt(hours)} h, from {baseline} before the meal{allowing}"
     else:
         out["verdict"] = "ok"
-        out["reason"] = f"At {end} after {_fmt(hours)} h, from {baseline} before the meal"
+        out["reason"] = f"At {raw_end} after {_fmt(hours)} h, from {baseline} before the meal{allowing}"
     return out
 
 

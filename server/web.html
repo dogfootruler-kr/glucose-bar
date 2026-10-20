@@ -7,10 +7,10 @@
 <style>
   :root { --bg: #f6f7f9; --card: #fff; --fg: #15171c; --muted: #6b7280; --grid: #e5e7eb;
           --line: #2563eb; --ok: #16a34a; --low: #dc2626; --high: #ea580c; --band: rgba(22,163,74,.10);
-          --meal: #ea580c; --insulin: #9333ea; }
+          --meal: #ea580c; --insulin: #9333ea; --exercise: #0d9488; }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #0f1218; --card: #171b23; --fg: #e8eaf0; --muted: #8b93a3; --grid: #262c38;
-            --line: #7cb8ff; --band: rgba(74,222,128,.10); --meal: #fb923c; --insulin: #c084fc; }
+            --line: #7cb8ff; --band: rgba(74,222,128,.10); --meal: #fb923c; --insulin: #c084fc; --exercise: #2dd4bf; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 -apple-system, system-ui, sans-serif; }
@@ -59,7 +59,8 @@
   .entry .row { display: flex; gap: 10px; align-items: center; }
   .thumb { width: 40px; height: 40px; border-radius: 9px; object-fit: cover; flex: none; display: grid; place-items: center; font-size: 18px; }
   .thumb.meal { background: rgba(234,88,12,.15); }
-  .thumb.insulin { width: 28px; height: 28px; margin: 0 6px; border-radius: 7px; font-size: 14px; background: rgba(147,51,234,.15); }
+  .thumb.insulin, .thumb.exercise { width: 28px; height: 28px; margin: 0 6px; border-radius: 7px; font-size: 14px; background: rgba(147,51,234,.15); }
+  .thumb.exercise { background: rgba(13,148,136,.15); }
   .entry .info { flex: 1; min-width: 0; }
   .entry .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .score { font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; text-align: right; flex: none; line-height: 1.1; }
@@ -93,6 +94,8 @@
     <div class="muted" id="when">Loading…</div>
     <div id="forecast" class="small"></div>
     <div id="insulin" class="small muted"></div>
+    <div id="exercise" class="small muted"></div>
+    <div id="postEx" class="small muted"></div>
   </div>
   <div class="card">
     <div class="seg" id="seg"></div>
@@ -107,6 +110,7 @@
     <div class="seg" id="kind">
       <button data-kind="meal" class="on">🍽 Meal</button>
       <button data-kind="insulin">💉 Insulin</button>
+      <button data-kind="exercise">🏃 Exercise</button>
     </div>
     <div id="mealForm">
       <label for="photo">Photo</label>
@@ -118,6 +122,7 @@
       <div id="estimateResult" class="small muted"></div>
       <label for="carbs">Carbs (g)</label>
       <input id="carbs" type="number" inputmode="decimal" min="0">
+      <div id="exNear" class="small muted" style="display:none; margin-top:10px"></div>
       <div id="doseBox" class="dose" style="display:none"></div>
       <label class="check" id="alsoDoseRow" style="display:none"><input type="checkbox" id="alsoDose"> Also log <input id="doseUnits" type="number" step="0.5" min="0" style="width:70px"> u rapid insulin</label>
     </div>
@@ -129,7 +134,17 @@
       <label for="insNote">Note</label>
       <input id="insNote" placeholder="Optional">
     </div>
-    <label for="time">Time</label>
+    <div id="exerciseForm" style="display:none">
+      <div class="row">
+        <div><label for="activity">Activity</label><select id="activity"></select></div>
+        <div><label for="intensity">Intensity</label><select id="intensity"><option value="light">Light</option><option value="moderate" selected>Moderate</option><option value="hard">Hard</option></select></div>
+      </div>
+      <label for="minutes">Duration (min)</label>
+      <input id="minutes" type="number" inputmode="numeric" step="5" min="1" value="30">
+      <label for="exNote">Note</label>
+      <input id="exNote" placeholder="Optional">
+    </div>
+    <label for="time" id="timeLabel">Time</label>
     <input id="time" type="datetime-local">
     <div class="actions"><button class="btn primary" id="save">Save</button><button class="btn danger" id="deleteEntry" style="display:none">Delete</button><span id="saveMsg" class="small muted"></span></div>
   </div>
@@ -138,7 +153,7 @@
     <h2>Journal</h2>
     <div class="jhead">
       <div class="seg" id="jfilter">
-        <button data-filter="all" class="on">All</button><button data-filter="meal">Meals</button><button data-filter="insulin">Insulin</button>
+        <button data-filter="all" class="on">All</button><button data-filter="meal">Meals</button><button data-filter="insulin">Insulin</button><button data-filter="exercise">Exercise</button>
       </div>
       <select id="jsort" aria-label="Sort">
         <option value="recent">By day</option><option value="best">Easiest first</option><option value="worst">Hardest first</option>
@@ -158,12 +173,21 @@
 </main>
 <script>
 const LOW = 70, HIGH = 180;
-let hours = 6, mealSort = 'recent', meals = [], entries = [], aiAvailable = false;
+let hours = 6, mealSort = 'recent', meals = [], entries = [], exercise = [], aiAvailable = false;
 let plotted = [], plottedEvents = [], scaleX = null, scaleY = null;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
 const fmtTime = t => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const fmtU = u => Number.isInteger(u) ? u : u.toFixed(1);
+const fmtMin = m => m < 60 ? `${Math.round(m)} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${Math.round(m % 60)} min` : ''}`;
+const ACT = { walk: ['🚶', 'Walk'], run: ['🏃', 'Run'], cycling: ['🚴', 'Cycling'], strength: ['🏋️', 'Strength'], swim: ['🏊', 'Swim'], sport: ['🎾', 'Sport'], other: ['🤸', 'Exercise'] };
+const act = e => ACT[e.activity] || ACT.other;
+const KIND_COLOR = { meal: 'var(--meal)', insulin: 'var(--insulin)', exercise: 'var(--exercise)' };
+const endT = e => Date.parse(e.timestamp) + (e.minutes || 0) * 60e3;
+const planned = e => e.kind === 'exercise' && Date.parse(e.timestamp) > Date.now();
+const entryName = e => e.kind === 'meal' ? e.note || 'Meal' : e.kind === 'exercise' ? `${act(e)[1]} · ${fmtMin(e.minutes)}`
+  : `${fmtU(e.units || 0)} u ${e.insulinType === 'long' ? 'long-acting' : 'rapid'}`;
+$('activity').innerHTML = Object.entries(ACT).map(([k, [icon, name]]) => `<option value="${k}">${icon} ${name}</option>`).join('');
 
 const seg = $('seg');
 [3, 6, 12, 24].forEach(h => {
@@ -175,16 +199,19 @@ const seg = $('seg');
 
 function color(v) { return v < LOW ? 'var(--low)' : v > HIGH ? 'var(--high)' : 'var(--ok)'; }
 function eventLabel(e) {
-  return e.kind === 'meal'
-    ? `🍽 ${esc(e.note || 'Meal')}${e.carbs != null ? ` · ${Math.round(e.carbs)} g` : ''}`
-    : `💉 ${fmtU(e.units || 0)} u ${esc(e.insulinType || 'rapid')}`;
+  if (e.kind === 'meal') return `🍽 ${esc(e.note || 'Meal')}${e.carbs != null ? ` · ${Math.round(e.carbs)} g` : ''}`;
+  if (e.kind === 'exercise') return `${act(e)[0]} ${planned(e) ? 'Planned: ' : ''}${esc(entryName(e))} · ${esc(e.intensity)}`;
+  return `💉 ${fmtU(e.units || 0)} u ${esc(e.insulinType || 'rapid')}`;
 }
 
 function draw(points, forecast, events) {
   const svg = $('chart');
   const W = 600, H = 220, now = Date.now(), t0 = now - hours * 3600e3;
   const fpts = forecast ? forecast.points : [];
-  const t1 = fpts.length ? Date.parse(fpts[fpts.length - 1].timestamp) : now;
+  // Exercise planned soon extends the chart so it shows.
+  const soon = events.filter(e => planned(e) && Date.parse(e.timestamp) <= now + Math.min(hours * 900e3, 3 * 3600e3));
+  const t1 = Math.max(fpts.length ? Date.parse(fpts[fpts.length - 1].timestamp) : now, ...soon.map(e => Date.parse(e.timestamp) + 600e3));
+  events = events.filter(e => Date.parse(e.timestamp) <= t1);
   const max = Math.max(250, ...points.concat(fpts).map(p => p.mgdl + 30)), min = 40;
   const x = t => (t - t0) / (t1 - t0) * W, y = v => H - (v - min) / (max - min) * H;
   let s = `<rect x="0" y="${y(HIGH)}" width="${W}" height="${y(LOW) - y(HIGH)}" fill="var(--band)"/>`;
@@ -198,9 +225,11 @@ function draw(points, forecast, events) {
   }
   if (last) s += `<circle cx="${x(Date.parse(last.timestamp))}" cy="${y(last.mgdl)}" r="5" fill="${color(last.mgdl)}"/>`;
   for (const e of events) {
-    const ex = x(Date.parse(e.timestamp));
-    s += `<line x1="${ex}" x2="${ex}" y1="14" y2="${H}" stroke="${e.kind === 'meal' ? 'var(--meal)' : 'var(--insulin)'}" stroke-opacity=".35" vector-effect="non-scaling-stroke"/>`;
-    s += `<circle cx="${ex}" cy="10" r="5" fill="${e.kind === 'meal' ? 'var(--meal)' : 'var(--insulin)'}"/>`;
+    const ex = x(Date.parse(e.timestamp)), c = KIND_COLOR[e.kind], o = planned(e) ? .5 : 1;
+    if (e.kind === 'exercise') s += `<rect x="${Math.max(0, ex)}" y="0" width="${Math.max(0, Math.min(W, x(endT(e))) - Math.max(0, ex))}" height="${H}" fill="${c}" fill-opacity="${.12 * o}"/>`;
+    if (ex < 0) continue;
+    s += `<line x1="${ex}" x2="${ex}" y1="14" y2="${H}" stroke="${c}" stroke-opacity="${.35 * o}" vector-effect="non-scaling-stroke"/>`;
+    s += `<circle cx="${ex}" cy="10" r="5" fill="${c}" fill-opacity="${o}"/>`;
   }
   s += `<g id="hover" style="display:none"><line id="hl" y1="0" y2="${H}" stroke="var(--muted)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/><circle id="hc" r="5" stroke="var(--card)" stroke-width="2"/></g>`;
   svg.innerHTML = s;
@@ -221,7 +250,8 @@ function hover(clientX) {
   $('hover').style.display = '';
   $('hl').setAttribute('x1', px); $('hl').setAttribute('x2', px);
   $('hc').setAttribute('cx', px); $('hc').setAttribute('cy', py); $('hc').setAttribute('fill', color(best.mgdl));
-  const near = plottedEvents.filter(e => Math.abs(scaleX(Date.parse(e.timestamp)) - vx) < 12);
+  const near = plottedEvents.filter(e => Math.abs(scaleX(Date.parse(e.timestamp)) - vx) < 12
+    || (e.kind === 'exercise' && scaleX(Date.parse(e.timestamp)) <= vx && vx <= scaleX(endT(e))));
   tip.innerHTML = `<b>${best.mgdl}</b> mg/dL · ${(best.mgdl / 18.0182).toFixed(1)} mmol/L<br><span class="muted">${fmtTime(best.timestamp)}</span>`
     + near.map(e => `<br>${eventLabel(e)} <span class="muted">${fmtTime(e.timestamp)}</span>`).join('');
   tip.style.display = 'block';
@@ -242,17 +272,21 @@ function statBlock(id, s) {
     : '<div class="muted">No data yet</div>';
 }
 
-function renderForecast(fc) {
-  const el = $('forecast');
+function renderForecast(fc, post) {
+  const el = $('forecast'), lim = LOW + (post ? post.raise : 0);
   el.className = 'small'; el.textContent = '';
+  $('postEx').textContent = post ? `🔔 Low alerts come earlier until ${fmtTime(post.until)}, after your ${post.label}` : '';
   if (!fc) return;
-  if (fc.slope < 0 && fc.from > LOW) {
-    const mins = (LOW - fc.from) / fc.slope;
+  if (fc.slope < 0 && fc.from > lim) {
+    const mins = (lim - fc.from) / fc.slope;
     if (mins <= 30) {
       el.className = 'small warn';
-      el.textContent = `⚠ Heading low: ${LOW} around ${fmtTime(Date.parse(fc.fromTimestamp) + mins * 60e3)}`;
+      el.textContent = `⚠ Heading low: ${lim} around ${fmtTime(Date.parse(fc.fromTimestamp) + mins * 60e3)}`;
       return;
     }
+  } else if (post && fc.slope < 0 && fc.from > LOW) {
+    el.className = 'small warn'; el.textContent = `⚠ Still falling after your ${post.label}`;
+    return;
   }
   const v = fc.points[fc.points.length - 1].mgdl;
   if (Math.abs(fc.slope) >= 1) { el.className = 'small muted'; el.textContent = `About ${v} in 30 min if the trend continues`; }
@@ -263,6 +297,10 @@ function renderInsulin(events) {
   let rapid = 0, long = 0;
   for (const e of events) if (e.kind === 'insulin' && Date.parse(e.timestamp) >= start) (e.insulinType === 'long' ? (long += e.units || 0) : (rapid += e.units || 0));
   $('insulin').textContent = rapid + long ? `💉 Today: ${fmtU(rapid)} u rapid · ${fmtU(long)} u long` : '';
+  const done = events.filter(e => e.kind === 'exercise' && !planned(e) && Date.parse(e.timestamp) >= start).reduce((n, e) => n + e.minutes, 0);
+  const next = events.find(planned);
+  $('exercise').textContent = [done ? `🏃 Today: ${fmtMin(done)} exercise` : null,
+    next ? `Planned: ${act(next)[1].toLowerCase()} at ${fmtTime(next.timestamp)}` : null].filter(Boolean).join(' · ');
 }
 
 const VERDICTS = { ok: ['Dose about right', 'var(--ok)'], tooLittle: ['Dose too low', 'var(--high)'], tooMuch: ['Dose too high', 'var(--high)'] };
@@ -270,26 +308,45 @@ let jFilter = 'all', expanded = null, showAll = false;
 const openDays = new Set(), closedDays = new Set();
 const dayKey = t => new Date(t).toDateString();
 function dayName(key) {
-  const d = new Date(key), today = new Date(), y = new Date(); y.setDate(today.getDate() - 1);
+  const d = new Date(key), today = new Date(), y = new Date(), t = new Date(); y.setDate(today.getDate() - 1); t.setDate(today.getDate() + 1);
   if (key === today.toDateString()) return 'Today';
+  if (key === t.toDateString()) return 'Tomorrow';
   if (key === y.toDateString()) return 'Yesterday';
   return d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
 }
 function dayTotals(list) {
-  let carbs = 0, rapid = 0, long = 0;
+  let carbs = 0, rapid = 0, long = 0, moved = 0, plan = 0;
   for (const e of list) {
     if (e.kind === 'meal') carbs += e.carbs || 0;
+    else if (e.kind === 'exercise') planned(e) ? (plan += e.minutes) : (moved += e.minutes);
     else if (e.insulinType === 'long') long += e.units || 0; else rapid += e.units || 0;
   }
-  return [carbs ? `${Math.round(carbs)} g` : null, rapid ? `${fmtU(rapid)} u rapid` : null, long ? `${fmtU(long)} u long` : null].filter(Boolean).join(' · ');
+  return [carbs ? `${Math.round(carbs)} g` : null, rapid ? `${fmtU(rapid)} u rapid` : null, long ? `${fmtU(long)} u long` : null,
+    moved ? `${fmtMin(moved)} exercise` : null, plan ? `${fmtMin(plan)} planned` : null].filter(Boolean).join(' · ');
+}
+function exerciseHTML(e, when, open, actions) {
+  const i = (exercise.find(x => x.id === e.id) || {}).impact, facts = [];
+  if (i && i.lowAfter) facts.push(`<b style="color:var(--low)">Went down to ${i.lowAfter.mgdl} at ${fmtTime(i.lowAfter.timestamp)}, ${fmtMin(i.lowAfter.minutesAfter)} after you finished.</b> Exercise can lower glucose for many hours.`);
+  if (planned(e)) facts.push('Planned: the dose suggestion and low alerts allow for it.');
+  if (i) {
+    if (i.startGlucose != null && i.endGlucose != null) facts.push(`${i.startGlucose} → ${i.endGlucose}${i.inProgress ? ' so far' : ''} (${i.change >= 0 ? '+' : ''}${i.change})`);
+    facts.push(`Typical drop for this activity: ${i.expectedDrop}` + (i.exerciseDrop != null ? ` · drop from the exercise: ${i.exerciseDrop}` : ''));
+    if (i.lowDuring) facts.push('Went low during it');
+    if (i.lowest) facts.push(`Lowest ${i.complete ? 'in the 12 h after' : 'since'}: ${i.lowest.mgdl} at ${fmtTime(i.lowest.timestamp)}`);
+  }
+  const badge = i && i.lowAfter ? '<div class="score" style="color:var(--low)">⚠<small>low after</small></div>' : '';
+  const bits = [planned(e) ? 'Planned' : null, when, esc(e.intensity), esc(e.note)].filter(Boolean).join(' · ');
+  return `<div class="entry${open}" data-id="${e.id}"><div class="row"><div class="thumb exercise">${act(e)[0]}</div><div class="info"><div class="name">${esc(entryName(e))}</div>`
+    + `<div class="muted small">${bits}</div></div>${badge}</div><div class="more"><div class="facts">${facts.map(f => `<div>${f}</div>`).join('')}</div>${actions}</div></div>`;
 }
 function entryHTML(e, byId, withDay) {
   const m = byId[e.id], i = m && m.impact, d = m && m.dose;
   const when = new Date(e.timestamp).toLocaleString([], withDay ? { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
   const open = expanded === e.id ? ' open' : '';
   const actions = `<div class="entry-actions"><button class="btn" data-edit="${e.id}">Edit</button><button class="btn danger" data-del="${e.id}">Delete</button></div>`;
-  if (e.kind !== 'meal') {
-    const name = `${fmtU(e.units || 0)} u ${e.insulinType === 'long' ? 'long-acting' : 'rapid'}`;
+  if (e.kind === 'exercise') return exerciseHTML(e, when, open, actions);
+  if (e.kind === 'insulin') {
+    const name = entryName(e);
     return `<div class="entry${open}" data-id="${e.id}"><div class="row"><div class="thumb insulin">💉</div><div class="info"><div class="name">${name}</div>`
       + `<div class="muted small">${[when, esc(e.note)].filter(Boolean).join(' · ')}</div></div></div><div class="more">${actions}</div></div>`;
   }
@@ -298,13 +355,14 @@ function entryHTML(e, byId, withDay) {
   const badge = sc != null
     ? `<div class="score" style="color:${sc >= 80 ? 'var(--ok)' : sc >= 50 ? 'var(--high)' : 'var(--low)'}">${sc}<small style="color:${v ? v[1] : 'var(--muted)'}">${v ? v[0] : i.complete ? '' : 'so far'}</small></div>`
     : '';
-  const bits = [when, e.carbs != null ? `${Math.round(e.carbs)} g` : null, d && d.units ? `${fmtU(d.units)} u` : null].filter(Boolean).join(' · ');
+  const bits = [when, e.carbs != null ? `${Math.round(e.carbs)} g` : null, d && d.units ? `${fmtU(d.units)} u` : null, m && m.exercise ? 'with exercise' : null].filter(Boolean).join(' · ');
   const img = e.photo ? `<img class="thumb" src="${e.photo}" alt="" loading="lazy">` : '<div class="thumb meal">🍽</div>';
   const facts = [];
   if (i) {
     facts.push(`Rose ${i.earlyRise ?? i.rise} in the first 90 min, peak ${i.peak} after ${i.minutesToPeak} min`);
     if (i.minutesAboveHigh) facts.push(`${i.minutesAboveHigh} min above range`);
   }
+  if (m && m.exercise) facts.push(`<span style="color:var(--exercise)">${m.exercise.items.length === 1 ? esc(m.exercise.items[0]) : 'Exercise'} ${m.exercise.effect >= 0 ? 'lowered' : 'raised'} glucose by about ${Math.abs(m.exercise.effect)}</span>; scores allow for this`);
   if (d) {
     if (d.units) facts.push(`${fmtU(d.units)} u rapid${d.minutesFromMeal == null || Math.abs(d.minutesFromMeal) < 3 ? ' when eating' : d.minutesFromMeal < 0 ? `, ${-d.minutesFromMeal} min before eating` : `, ${d.minutesFromMeal} min after eating`}`);
     if (d.reason) facts.push(`${v ? `<b style="color:${v[1]}">${v[0]}:</b> ` : ''}${esc(d.reason)}`);
@@ -415,12 +473,18 @@ function setKind(k) {
   document.querySelectorAll('[data-kind]').forEach(x => x.classList.toggle('on', x.dataset.kind === k));
   $('mealForm').style.display = kind === 'meal' ? '' : 'none';
   $('insulinForm').style.display = kind === 'insulin' ? '' : 'none';
+  $('exerciseForm').style.display = kind === 'exercise' ? '' : 'none';
+  $('timeLabel').textContent = kind === 'exercise' ? 'Starts' : 'Time';
+  setMaxTime();
 }
+// Exercise can be planned up to 6 hours ahead; meals and insulin up to an hour.
+function setMaxTime() { const d = new Date(Date.now() + (kind === 'exercise' ? 6 : 1) * 3600e3); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); $('time').max = d.toISOString().slice(0, 16); }
 document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => { if (!editing) setKind(b.dataset.kind); });
 
 function resetForm() {
-  ['mealNote', 'carbs', 'insNote', 'photo'].forEach(id => $(id).value = '');
+  ['mealNote', 'carbs', 'insNote', 'exNote', 'photo'].forEach(id => $(id).value = '');
   $('units').value = 1; $('itype').value = 'rapid';
+  $('activity').value = 'walk'; $('minutes').value = 30; $('intensity').value = 'moderate';
   photoData = null; lastEstimate = null; removePhoto = false; editing = null;
   $('preview').style.display = 'none'; $('estimateResult').textContent = '';
   $('logTitle').textContent = 'Log'; $('cancelEdit').style.display = 'none'; $('deleteEntry').style.display = 'none';
@@ -433,12 +497,14 @@ function startEdit(e) {
   editing = e;
   setKind(e.kind);
   document.querySelectorAll('[data-kind]').forEach(x => x.disabled = true);
-  $('logTitle').textContent = e.kind === 'meal' ? 'Edit meal' : 'Edit insulin';
+  $('logTitle').textContent = `Edit ${e.kind}`;
   $('cancelEdit').style.display = ''; $('deleteEntry').style.display = '';
   setTime(e.timestamp);
   if (e.kind === 'meal') {
     $('mealNote').value = e.note || ''; $('carbs').value = e.carbs ?? '';
     if (e.photo) { $('preview').src = e.photo; $('preview').style.display = 'block'; }
+  } else if (e.kind === 'exercise') {
+    $('activity').value = e.activity || 'other'; $('minutes').value = e.minutes; $('intensity').value = e.intensity || 'moderate'; $('exNote').value = e.note || '';
   } else {
     $('units').value = e.units; $('itype').value = e.insulinType || 'rapid'; $('insNote').value = e.note || '';
   }
@@ -447,7 +513,7 @@ function startEdit(e) {
 }
 $('cancelEdit').onclick = resetForm;
 async function deleteEntry(e) {
-  if (!e || !confirm(`Delete ${e.kind === 'meal' ? '“' + (e.note || 'meal') + '”' : fmtU(e.units) + ' u insulin'}? This can't be undone.`)) return;
+  if (!e || !confirm(`Delete “${entryName(e)}”? This can't be undone.`)) return;
   await fetch(`/events/${e.id}`, { method: 'DELETE' });
   if (editing && editing.id === e.id) resetForm();
   load();
@@ -461,6 +527,12 @@ function updateDose() {
   const now = Math.abs(new Date($('time').value) - Date.now()) < 30 * 60e3;
   const show = !editing && kind === 'meal';
   $('alsoDoseRow').style.display = show ? '' : 'none';
+  // Exercise that ended up to 3 h before the meal or starts up to 2 h after it
+  const t = new Date($('time').value).getTime();
+  const gap = e => Math.max(0, Date.parse(e.timestamp) - t, t - endT(e));
+  const ex = show && entries.filter(e => e.kind === 'exercise' && gap(e) <= (endT(e) < t ? 3 : 2) * 3600e3).sort((a, b) => gap(a) - gap(b))[0];
+  $('exNear').style.display = ex ? '' : 'none';
+  if (ex) $('exNear').textContent = `${act(ex)[0]} ${entryName(ex)}, ${planned(ex) ? 'planned for ' + fmtTime(ex.timestamp) : endT(ex) > Date.now() ? 'in progress' : 'ended at ' + fmtTime(endT(ex))}`;
   if (!show || !now || !(carbs > 0)) { $('doseBox').style.display = 'none'; return; }
   doseTimer = setTimeout(async () => {
     try {
@@ -472,9 +544,10 @@ function updateDose() {
       if (s.glucose != null) rows.push([`Now ${s.glucose}, target ${s.target}, 1 u per ${s.sensitivity}`, s.correctionUnits]);
       if (s.trendUnits) rows.push(['Where the trend is heading in 30 min', s.trendUnits]);
       if (s.activeDeducted > 0) rows.push([`Insulin still active: ${fmtU(s.activeInsulin)} u, less what ${s.carbsOnBoard} g still digesting needs`, -s.activeDeducted]);
+      if (s.exercise) rows.push([s.exercise.label, -s.exercise.units]);
       const basis = s.meals < 3 ? `Mostly the usual rules for your ${fmtU(s.dailyDose)} u a day, until more meals are logged` : `Learned from ${s.meals} meals over ${Math.round(s.days)} days`;
       $('doseBox').innerHTML = `Suggested rapid insulin: <b>${fmtU(s.units)} u</b><div class="muted small">${basis}</div>`
-        + (s.warning ? `<div class="warn small">${esc(s.warning)}</div>` : '')
+        + [s.warning, s.exercise && s.exercise.warning].filter(Boolean).map(w => `<div class="warn small">${esc(w)}</div>`).join('')
         + `<details><summary class="small">How it's worked out</summary><table>${rows.map(([l, v]) => `<tr><td class="muted">${esc(l)}</td><td>${u(v)}</td></tr>`).join('')}<tr><td class="muted">Rounded down to the nearest half unit</td><td><b style="font-size:13px">${fmtU(s.units)} u</b></td></tr></table></details>`
         + '<div class="muted small" style="margin-top:6px">An estimate from your own logs, not medical advice.</div>';
       $('doseBox').style.display = '';
@@ -528,9 +601,12 @@ $('save').onclick = async () => {
     if (photoData) Object.assign(body, { photo: photoData, mediaType: 'image/jpeg' });
     if (lastEstimate) body.estimate = lastEstimate;
     if (!body.note && body.carbs == null && !photoData && !(editing && editing.photo)) { $('saveMsg').textContent = 'Add a photo, description or carbs.'; return; }
-  } else {
+  } else if (kind === 'insulin') {
     Object.assign(body, { units: Number($('units').value), insulinType: $('itype').value, note: $('insNote').value.trim() || null });
     if (!(body.units > 0)) { $('saveMsg').textContent = 'Enter the units.'; return; }
+  } else {
+    Object.assign(body, { activity: $('activity').value, minutes: Number($('minutes').value), intensity: $('intensity').value, note: $('exNote').value.trim() || null });
+    if (!(body.minutes > 0)) { $('saveMsg').textContent = 'Enter how many minutes.'; return; }
   }
   $('save').disabled = true;
   try {
@@ -563,7 +639,7 @@ async function load() {
       const mins = Math.round((Date.now() - Date.parse(r.timestamp)) / 60000);
       $('when').textContent = (mins < 1 ? 'Just now' : `${mins} min ago`) + (g.error ? ` · ${g.error}` : '');
     }
-    renderForecast(g.forecast);
+    renderForecast(g.forecast, g.postExercise);
     renderInsulin(await (await fetch('/events?hours=24')).json());
     draw(g.history, g.forecast, g.events || []);
     $('estimate').disabled = !g.aiAvailable;
@@ -572,7 +648,9 @@ async function load() {
     statBlock('today', st.today); statBlock('week', st.week);
     meals = await (await fetch(`/meals?days=30&low=${LOW}&high=${HIGH}`)).json();
     entries = await (await fetch('/events?hours=720')).json();
+    exercise = await fetch(`/exercise?days=30&low=${LOW}`).then(r => r.ok ? r.json() : []).catch(() => []);
     renderMeals();
+    setMaxTime();
   } catch (e) {
     $('when').textContent = 'Server unreachable';
   }

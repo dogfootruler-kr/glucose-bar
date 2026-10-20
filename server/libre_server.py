@@ -7,12 +7,14 @@ keeps every reading in a local SQLite database and serves it over HTTP.
   GET /stats?low=70&high=180  time in range, average and A1c estimate (today / 7 days)
   GET /readings?start=&end=   readings between two Unix times
   GET /export.csv             every stored reading
-  GET/POST /events            meals and insulin (POST {kind, ts?, carbs?, units?, insulinType?, note?, photo?})
+  GET/POST /events            meals, insulin and exercise
+                              (POST {kind, timestamp?, carbs?, units?, insulinType?, activity?, minutes?, intensity?, note?, photo?})
   PATCH /events/<id>          change fields (same as POST; "removePhoto": true drops the photo)
   DELETE /events/<id>
   GET /photos/<id>            meal photo
   POST /meals/estimate        {photo?, mediaType?, text?} -> Claude carb estimate
   GET /meals?days=30&high=180 meals with their glucose impact and how the insulin dose worked out
+  GET /exercise?days=30&low=70 exercise with how glucose responded, during and in the 12 h after
   GET /dose?carbs=50&target=120&low=70   rapid-insulin suggestion learned from the history
   GET /summary, POST /summary/generate   weekly recap written by Claude
 
@@ -40,6 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import dosing
+import exercise
 import insights
 
 try:
@@ -84,7 +87,12 @@ def db():
     conn.execute("CREATE TABLE IF NOT EXISTS readings (ts INTEGER PRIMARY KEY, mgdl INTEGER NOT NULL, trend INTEGER)")
     conn.execute("""CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL,
-        carbs REAL, units REAL, insulin_type TEXT, note TEXT, photo TEXT, estimate TEXT)""")
+        carbs REAL, units REAL, insulin_type TEXT, note TEXT, photo TEXT, estimate TEXT,
+        activity TEXT, minutes REAL, intensity TEXT)""")
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+    for col, kind in (("activity", "TEXT"), ("minutes", "REAL"), ("intensity", "TEXT")):
+        if col not in columns:  # databases from before exercise was logged
+            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {kind}")
     conn.execute("""CREATE TABLE IF NOT EXISTS summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL,
         period_start INTEGER NOT NULL, period_end INTEGER NOT NULL, text TEXT NOT NULL)""")
@@ -107,6 +115,7 @@ def event_json(r):
     return {
         "id": r["id"], "ts": r["ts"], "timestamp": iso(r["ts"]), "kind": r["kind"],
         "carbs": r["carbs"], "units": r["units"], "insulinType": r["insulin_type"], "note": r["note"],
+        "activity": r["activity"], "minutes": r["minutes"], "intensity": r["intensity"],
         "photo": f"/photos/{r['id']}" if r["photo"] else None,
         "estimate": json.loads(r["estimate"]) if r["estimate"] else None,
     }
@@ -140,28 +149,39 @@ def remove_photo(name):
         pass
 
 
+events_version = 0  # bumped on every change to the log, so cached fits know to redo
+
+
 def add_event(body):
+    global events_version
     kind = body.get("kind")
-    if kind not in ("meal", "insulin"):
-        raise ValueError("kind must be meal or insulin")
+    if kind not in ("meal", "insulin", "exercise"):
+        raise ValueError("kind must be meal, insulin or exercise")
     ts = parse_time(body["timestamp"]) if body.get("timestamp") else int(time.time())
+    if kind == "exercise":
+        exercise.validate({**body, "ts": ts}, time.time())
     with db() as conn:
         cur = conn.execute(
-            "INSERT INTO events (ts, kind, carbs, units, insulin_type, note, estimate) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO events (ts, kind, carbs, units, insulin_type, note, estimate, activity, minutes, intensity)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ts, kind, body.get("carbs"), body.get("units"), body.get("insulinType"), (body.get("note") or "").strip() or None,
-             json.dumps(body["estimate"]) if body.get("estimate") else None))
+             json.dumps(body["estimate"]) if body.get("estimate") else None,
+             body.get("activity"), body.get("minutes"), body.get("intensity")))
         eid = cur.lastrowid
         if body.get("photo"):
             save_photo(conn, eid, body)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
+    events_version += 1
     return event_json(row)
 
 
-EDITABLE = {"carbs": "carbs", "units": "units", "insulinType": "insulin_type", "note": "note"}
+EDITABLE = {"carbs": "carbs", "units": "units", "insulinType": "insulin_type", "note": "note",
+            "activity": "activity", "minutes": "minutes", "intensity": "intensity"}
 
 
 def update_event(eid, body):
     """Changes the fields present in body; the others stay as they are."""
+    global events_version
     with db() as conn:
         row = conn.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
         if not row:
@@ -173,6 +193,10 @@ def update_event(eid, body):
             sets["ts"] = parse_time(body["timestamp"])
         if "estimate" in body:
             sets["estimate"] = json.dumps(body["estimate"]) if body["estimate"] else None
+        if row["kind"] == "exercise":
+            exercise.validate({k: sets.get(col, row[col]) for k, col in
+                               (("activity", "activity"), ("minutes", "minutes"), ("intensity", "intensity"), ("ts", "ts"))},
+                              time.time())
         if sets:
             conn.execute(f"UPDATE events SET {', '.join(f'{c} = ?' for c in sets)} WHERE id = ?", (*sets.values(), eid))
         if (body.get("photo") or body.get("removePhoto")) and row["photo"]:
@@ -181,21 +205,37 @@ def update_event(eid, body):
         if body.get("photo"):
             save_photo(conn, eid, body)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
+    events_version += 1
     return event_json(row)
 
 
 def delete_event(eid):
+    global events_version
     with db() as conn:
         row = conn.execute("SELECT photo FROM events WHERE id = ?", (eid,)).fetchone()
         conn.execute("DELETE FROM events WHERE id = ?", (eid,))
+    events_version += 1
     if row and row["photo"]:
         remove_photo(row["photo"])
 
 
+fit_cache, fit_lock = {}, threading.Lock()   # low -> (key, fit)
+
+
+def fitted(low=70):
+    """(carb ratio and sensitivity or None without insulin logs, exercise effects), learned from the
+    last 30 days. Kept until a new reading arrives or the log changes."""
+    with fit_lock:
+        since = int(time.time()) - 30 * 86400
+        readings = history(since)
+        key = (readings[-1][0] if readings else None, events_version)
+        if fit_cache.get(low, (None,))[0] != key:
+            fit_cache[low] = (key, exercise.fit(readings, events(since), low))
+        return fit_cache[low][1]
+
+
 def dosing_params(low=70):
-    """Carb ratio and sensitivity learned from the last 30 days, or None without insulin logs."""
-    since = int(time.time()) - 30 * 86400
-    return dosing.fit(history(since), events(since), low)
+    return fitted(low)[0]
 
 
 def meals_with_impact(since_ts, high, low=70):
@@ -203,27 +243,55 @@ def meals_with_impact(since_ts, high, low=70):
     context = events(since_ts - 4 * 3600)
     meals = [e for e in context if e["kind"] == "meal"]
     insulin = [e for e in context if e["kind"] == "insulin"]
-    params = dosing_params(low)
+    params, fx = fitted(low)
     out = []
     for m in meals:
         if m["ts"] < since_ts:
             continue
         readings = history(m["ts"] - 15 * 60, m["ts"] + insights.MEAL_WINDOW)
-        m["impact"] = insights.meal_impact(m["ts"], readings, high, now)
-        m["dose"] = dosing.meal_dose(m["ts"], meals, insulin, readings, low, high, now, params)
+        m["impact"] = insights.meal_impact(m["ts"], readings, high, now, fx)
+        m["dose"] = dosing.meal_dose(m["ts"], meals, insulin, readings, low, high, now, params, fx)
+        exercised = fx.lowered(m["ts"], m["ts"] + insights.MEAL_WINDOW)
+        m["exercise"] = None
+        if abs(exercised) >= 10:
+            m["exercise"] = {"items": fx.describe(m["ts"] - 3600, m["ts"] + insights.MEAL_WINDOW), "effect": round(exercised)}
         out.append(m)
     return out
 
 
+def exercise_with_impact(since_ts, low=70):
+    now = time.time()
+    context = events(since_ts - 6 * 3600)
+    params, fx = fitted(low)
+    out = []
+    for e in exercise.sessions(context):
+        if e["ts"] < since_ts:
+            continue
+        e["impact"] = exercise.impact(e, history(e["ts"] - 15 * 60, exercise.ends_at(e) + 12 * 3600), params, fx, context, low, now)
+        for k in ("lowest", "lowAfter"):
+            if e["impact"] and e["impact"][k]:
+                e["impact"][k]["timestamp"] = iso(e["impact"][k]["ts"])
+        out.append(e)
+    return out
+
+
 def dose_suggestion(carbs, target, low):
-    params = dosing_params(low)
+    params, fx = fitted(low)
     if not params:
         raise RuntimeError("Log your rapid and long-acting insulin for a day or two first.")
     now = int(time.time())
     recent = history(now - 30 * 60)
     glucose = recent[-1][1] if recent and recent[-1][0] >= now - 15 * 60 else None
     fc = insights.forecast(recent) if glucose is not None else None
-    return dosing.suggest(params, carbs, glucose, fc["slope"] if fc else None, events(now - 8 * 3600), now, target, low)
+    return dosing.suggest(params, carbs, glucose, fc["slope"] if fc else None, events(now - 8 * 3600), now, target, low,
+                          exercise.dose_effect(fx, now))
+
+
+def post_exercise():
+    post = exercise.post_exercise(exercise.sessions(events(int(time.time()) - 24 * 3600)), time.time())
+    if post:
+        post["until"] = iso(post.pop("untilTs"))
+    return post
 
 
 # --- weekly summary ------------------------------------------------------------
@@ -246,7 +314,9 @@ def generate_summary(low=70, high=180):
     with summary_lock:
         start, end, prev_start = insights.week_bounds(datetime.now())
         s, e, p = int(start.timestamp()), int(end.timestamp()), int(prev_start.timestamp())
-        digest = insights.weekly_digest(history(s, e), history(p, s), events(s), meals_with_impact(s, high, low), low, high, s, e)
+        sessions = [x for x in exercise_with_impact(s, low) if x["ts"] <= e]
+        digest = insights.weekly_digest(history(s, e), history(p, s), events(s), meals_with_impact(s, high, low), low, high, s, e,
+                                        sessions)
         if not digest["week"]:
             raise RuntimeError("No glucose data for the past week yet.")
         text = ai.weekly_summary(digest)
@@ -273,7 +343,7 @@ def summary_scheduler():
 
 
 def iso(ts):
-    return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+    return datetime.fromtimestamp(int(ts), timezone.utc).isoformat()  # whole seconds: the app's decoder rejects fractions
 
 
 def delta_for(ts, mgdl):
@@ -459,6 +529,7 @@ class Handler(BaseHTTPRequestHandler):
                 fc["fromTimestamp"] = iso(fc.pop("fromTs"))
             payload["forecast"] = fc
             payload["events"] = events(since)
+            payload["postExercise"] = post_exercise()
             payload["aiAvailable"] = bool(ai and ai.available())
             self._json(payload)
         elif path == "/stats":
@@ -493,6 +564,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/meals":
             since = int(time.time() - float(q.get("days", 30)) * 86400)
             self._json(meals_with_impact(since, int(q.get("high", 180)), int(q.get("low", 70))))
+        elif path == "/exercise":
+            since = int(time.time() - float(q.get("days", 30)) * 86400)
+            self._json(exercise_with_impact(since, int(q.get("low", 70))))
         elif path == "/dose":
             try:
                 self._json(dose_suggestion(float(q.get("carbs", 0)), int(q.get("target", 120)), int(q.get("low", 70))))

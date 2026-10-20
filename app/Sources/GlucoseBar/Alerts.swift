@@ -2,6 +2,7 @@ import Foundation
 import UserNotifications
 
 /// Posts macOS notifications for low/high/fast-drop/no-data, repeating every 20 minutes while a condition lasts.
+/// For a few hours after moderate or hard exercise, heading-low alerts come earlier.
 @MainActor
 final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     enum Condition: String, CaseIterable { case low, high, fastDrop, predictedLow, stale }
@@ -38,8 +39,10 @@ final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDe
         defaults.removeObject(forKey: "snoozedUntil")
     }
 
-    func evaluate(reading: Reading?, forecast: Forecast?, stale: Bool, staleSince: Date) {
+    func evaluate(reading: Reading?, forecast: Forecast?, postExercise: PostExercise?, stale: Bool, staleSince: Date) {
         let mmol = defaults.bool(forKey: "useMmol")
+        let raise = postExercise?.raise ?? 0
+        let lowLimit = defaults.integer(forKey: "alertLow") + raise
         var active: [Condition: (String, String)] = [:]
         if stale {
             let mins = Int(Date().timeIntervalSince(staleSince) / 60)
@@ -51,15 +54,20 @@ final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDe
             } else if r.mgdl >= defaults.integer(forKey: "alertHigh") {
                 active[.high] = ("High glucose: \(value)", "Above your high alert.")
             }
-            if defaults.bool(forKey: "alertFastDrop"), [1, 2].contains(r.trend ?? 3), r.mgdl < 100, active[.low] == nil {
+            if defaults.bool(forKey: "alertFastDrop"), [1, 2].contains(r.trend ?? 3), r.mgdl < 100 + raise, active[.low] == nil {
                 active[.fastDrop] = ("Dropping fast: \(value)", "Glucose is falling quickly.")
             }
-            if defaults.bool(forKey: "alertPredictedLow"), active[.low] == nil, active[.fastDrop] == nil,
-               let hit = forecast?.crossing(below: defaults.integer(forKey: "alertLow")),
-               hit.date.timeIntervalSinceNow <= 20 * 60 {
-                let mins = max(1, Int(hit.date.timeIntervalSinceNow / 60))
-                active[.predictedLow] = ("Heading low: \(value)",
-                                         "Projected to reach \(formatGlucose(hit.mgdl, mmol: mmol)) in about \(mins) min (\(hit.date.formatted(date: .omitted, time: .shortened))).")
+            if defaults.bool(forKey: "alertPredictedLow"), active[.low] == nil, active[.fastDrop] == nil {
+                let because = postExercise.map { " Alerting earlier after your \($0.label)." } ?? ""
+                if let hit = forecast?.crossing(below: lowLimit),
+                   hit.date.timeIntervalSinceNow <= Double(postExercise?.lookahead ?? 20) * 60 {
+                    let mins = max(1, Int(hit.date.timeIntervalSinceNow / 60))
+                    active[.predictedLow] = ("Heading low: \(value)",
+                                             "Projected to reach \(formatGlucose(hit.mgdl, mmol: mmol)) in about \(mins) min (\(hit.date.formatted(date: .omitted, time: .shortened))).\(because)")
+                } else if raise > 0, r.mgdl <= lowLimit, (forecast?.slope ?? 0) < 0 {
+                    // Already below the raised threshold, so the forecast can't cross it.
+                    active[.predictedLow] = ("Falling after exercise: \(value)", "Glucose is still dropping.\(because)")
+                }
             }
         }
 

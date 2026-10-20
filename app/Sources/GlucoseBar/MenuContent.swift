@@ -2,7 +2,7 @@ import Charts
 import SwiftUI
 
 /// The menu bar popup, laid out like a Control Center module: reading, chart, stats, recent
-/// meals, then menu-style rows.
+/// meals and exercise, then menu-style rows.
 struct MenuContent: View {
     @ObservedObject var store: GlucoseStore
     @ObservedObject var alerts: AlertManager
@@ -19,7 +19,7 @@ struct MenuContent: View {
                 GlucoseChart(store: store, hours: $chartHours)
                 statTiles
                 infoRows
-                recentMeals
+                recentEntries
                 if let err = store.fetchError ?? store.state?.error {
                     Label(err, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
@@ -65,12 +65,12 @@ struct MenuContent: View {
                     .foregroundStyle(.tint)
             }
             .buttonStyle(.plain)
-            .help("Log a meal or insulin")
+            .help("Log a meal, insulin or exercise")
         }
     }
 
     @ViewBuilder private func forecastLine(_ fc: Forecast) -> some View {
-        if let hit = fc.crossing(below: alertLow) {
+        if let hit = fc.crossing(below: alertLow + (store.postExercise?.raise ?? 0)) {
             Label("Heading low: \(store.format(hit.mgdl)) around \(hit.date.formatted(date: .omitted, time: .shortened))",
                   systemImage: "exclamationmark.triangle.fill")
                 .font(.caption.bold()).foregroundStyle(.red)
@@ -93,11 +93,25 @@ struct MenuContent: View {
 
     @ViewBuilder private var infoRows: some View {
         let insulin = store.insulinToday()
-        if insulin.rapid + insulin.long > 0 || store.sensorEnds != nil {
+        let exercise = store.exerciseToday()
+        let post = store.postExercise
+        if insulin.rapid + insulin.long > 0 || exercise.minutes > 0 || exercise.next != nil || post != nil || store.sensorEnds != nil {
             VStack(spacing: 6) {
                 if insulin.rapid + insulin.long > 0 {
                     InfoRow(symbol: "syringe", text: "Insulin today",
                             value: "\(formatUnits(insulin.rapid)) u rapid · \(formatUnits(insulin.long)) u long")
+                }
+                if exercise.minutes > 0 {
+                    InfoRow(symbol: "figure.run", text: "Exercise today", value: formatMinutes(exercise.minutes))
+                }
+                if let next = exercise.next {
+                    InfoRow(symbol: "calendar.badge.clock", text: "Planned \(next.exerciseActivity.name.lowercased())",
+                            value: "\(next.timestamp.formatted(date: .omitted, time: .shortened)) · \(formatMinutes(next.minutes ?? 0))")
+                }
+                if let post {
+                    InfoRow(symbol: "bell.badge", text: "Low alerts come earlier",
+                            value: "until \(post.until.formatted(date: .omitted, time: .shortened))")
+                        .help("After your \(post.label), heading-low alerts start \(store.format(post.raise)) higher")
                 }
                 if let ends = store.sensorEnds {
                     let left = ends.timeIntervalSinceNow
@@ -110,19 +124,17 @@ struct MenuContent: View {
         }
     }
 
-    @ViewBuilder private var recentMeals: some View {
-        let recent = store.meals.suffix(3).reversed()
+    @ViewBuilder private var recentEntries: some View {
+        let recent = store.entries.filter { ($0.isMeal || $0.isExercise) && !$0.isPlanned }.suffix(3).reversed()
         if !recent.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Recent Meals").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                ForEach(Array(recent)) { meal in
-                    if let entry = store.entry(meal.id) {
-                        Button { opener.edit(meal.id); dismiss() } label: {
-                            EntryRow(store: store, entry: entry, meal: meal, compact: true).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Edit this meal")
+                Text("Recent").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(Array(recent)) { entry in
+                    Button { opener.edit(entry.id); dismiss() } label: {
+                        EntryRow(store: store, entry: entry, meal: store.meal(entry.id), compact: true).contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .help(entry.isMeal ? "Edit this meal" : "Edit this exercise")
                 }
             }
         }
@@ -138,7 +150,7 @@ struct MenuContent: View {
 
     private var menu: some View {
         VStack(spacing: 0) {
-            MenuRow("Log Meal or Insulin…", symbol: "plus.circle") { open("log") }
+            MenuRow("New Entry…", symbol: "plus.circle") { open("log") }
             MenuRow("Journal", symbol: "list.bullet.rectangle") { open("journal") }
             if store.summary != nil || store.aiAvailable {
                 MenuRow("Weekly Summary", symbol: "text.document",
@@ -229,7 +241,7 @@ private struct MenuRow: View {
     }
 }
 
-/// History, 30-minute forecast, meal/insulin markers and a hover tooltip.
+/// History, 30-minute forecast, meal/insulin/exercise markers (and exercise planned soon) and a hover tooltip.
 struct GlucoseChart: View {
     @ObservedObject var store: GlucoseStore
     @Binding var hours: Int
@@ -250,11 +262,15 @@ struct GlucoseChart: View {
             let start = Date().addingTimeInterval(-Double(hours) * 3600)
             let points = store.history(lastHours: Double(hours))
             let forecast = store.state?.forecast
-            let events = store.events.filter { $0.timestamp >= start }
-            let end = forecast?.points.last?.timestamp ?? Date()
+            let events = store.events.filter { $0.end >= start }
+            let planned = events.filter { $0.isPlanned && $0.timestamp <= Date().addingTimeInterval(min(Double(hours) * 900, 3 * 3600)) }
+            let end = max(forecast?.points.last?.timestamp ?? Date(), (planned.map(\.timestamp).max() ?? .distantPast).addingTimeInterval(600))
+            let shown = events.filter { $0.timestamp <= end }
             let maxValue = max(250, ((points + (forecast?.points ?? [])).map(\.mgdl).max() ?? 0) + 30)
             let hoveredPoint = hovered.flatMap { h in points.min { abs($0.timestamp.timeIntervalSince(h)) < abs($1.timestamp.timeIntervalSince(h)) } }
-            let hoveredEvents = hovered.map { h in events.filter { abs($0.timestamp.timeIntervalSince(h)) < Double(hours) * 60 } } ?? []
+            let hoveredEvents = hovered.map { h in
+                shown.filter { abs($0.timestamp.timeIntervalSince(h)) < Double(hours) * 60 || ($0.isExercise && ($0.timestamp...$0.end).contains(h)) }
+            } ?? []
 
             Chart {
                 RectangleMark(yStart: .value("Low", targetLow), yEnd: .value("High", targetHigh))
@@ -270,12 +286,16 @@ struct GlucoseChart: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                ForEach(events) { e in
+                ForEach(shown.filter(\.isExercise)) { e in
+                    RectangleMark(xStart: .value("Start", max(e.timestamp, start)), xEnd: .value("End", min(e.end, end)))
+                        .foregroundStyle(.teal.opacity(e.isPlanned ? 0.06 : 0.12))
+                }
+                ForEach(shown.filter { $0.timestamp >= start }) { e in
                     PointMark(x: .value("Time", e.timestamp), y: .value("Glucose", maxValue - 12))
                         .symbol {
-                            Image(systemName: e.isMeal ? "fork.knife.circle.fill" : "syringe.fill")
+                            Image(systemName: e.isMeal ? "fork.knife.circle.fill" : e.symbol)
                                 .font(.system(size: 11))
-                                .foregroundStyle(e.isMeal ? .orange : .purple)
+                                .foregroundStyle(e.tint.opacity(e.isPlanned ? 0.6 : 1))
                         }
                 }
                 if let h = hoveredPoint {
@@ -286,7 +306,7 @@ struct GlucoseChart: View {
                                 Text("\(store.format(h.mgdl)) \(useMmol ? "mmol/L" : "mg/dL")").font(.caption.bold()).monospacedDigit()
                                 Text(h.timestamp.formatted(date: .omitted, time: .shortened)).font(.caption2).foregroundStyle(.secondary)
                                 ForEach(hoveredEvents) { e in
-                                    Label(e.label, systemImage: e.isMeal ? "fork.knife" : "syringe").font(.caption2)
+                                    Label(e.label, systemImage: e.isInsulin ? "syringe" : e.symbol).font(.caption2)
                                 }
                             }
                             .padding(.horizontal, 6).padding(.vertical, 3)

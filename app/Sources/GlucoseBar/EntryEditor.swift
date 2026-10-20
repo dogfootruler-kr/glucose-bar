@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Adds a meal or insulin entry, or changes an existing one.
+/// Adds a meal, insulin or exercise entry, or changes an existing one.
 struct EntryEditor: View {
     @ObservedObject var store: GlucoseStore
     let existing: GlucoseEvent?
@@ -21,6 +21,10 @@ struct EntryEditor: View {
     // insulin
     @State private var units: Double
     @State private var insulinType: String
+    // exercise
+    @State private var activity: String
+    @State private var minutes: Double
+    @State private var intensity: String
     // insulin logged together with a new meal
     @State private var suggestion: DoseSuggestion?
     @State private var suggestionError: String?
@@ -43,23 +47,43 @@ struct EntryEditor: View {
         _estimate = State(initialValue: existing?.estimate)
         _units = State(initialValue: existing?.units ?? 1)
         _insulinType = State(initialValue: existing?.insulinType ?? "rapid")
+        _activity = State(initialValue: existing?.activity ?? "walk")
+        _minutes = State(initialValue: existing?.minutes ?? 30)
+        _intensity = State(initialValue: existing?.intensity ?? "moderate")
     }
 
     private var isMeal: Bool { kind == "meal" }
+    private var isExercise: Bool { kind == "exercise" }
+
+    /// Exercise can be planned a few hours ahead; meals and insulin up to an hour.
+    private var latest: Date { Date().addingTimeInterval(isExercise ? 6 * 3600 : 3600) }
 
     /// Suggestions are for eating now, so they're hidden when logging something from earlier.
     private var suggestsDose: Bool { existing == nil && isMeal && abs(time.timeIntervalSinceNow) < 30 * 60 }
 
     private var canSave: Bool {
-        !saving && (isMeal ? carbs != nil || !note.isEmpty || photo != nil || keepsPhoto : units > 0)
+        guard !saving else { return false }
+        switch kind {
+        case "meal": return carbs != nil || !note.isEmpty || photo != nil || keepsPhoto
+        case "exercise": return minutes > 0
+        default: return units > 0
+        }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                if isMeal { mealSections } else { insulinSection }
+                switch kind {
+                case "meal": mealSections
+                case "exercise": exerciseSection
+                default: insulinSection
+                }
                 Section {
-                    DatePicker("Time", selection: Binding { time } set: { time = $0; timeEdited = true }, in: ...Date().addingTimeInterval(3600))
+                    DatePicker(isExercise ? "Starts" : "Time", selection: Binding { time } set: { time = $0; timeEdited = true }, in: ...latest)
+                } footer: {
+                    if isExercise && time > Date() {
+                        Text("Planned: dose suggestions and low alerts will allow for it.")
+                    }
                 }
                 if isMeal && existing == nil { doseSection }
                 if let error {
@@ -82,7 +106,7 @@ struct EntryEditor: View {
             .padding(16)
         }
         .frame(width: 460)
-        .frame(minHeight: 420, idealHeight: isMeal ? 680 : 420)
+        .frame(minHeight: 420, idealHeight: isMeal ? 680 : isExercise ? 470 : 420)
         .confirmationDialog("Delete this entry?", isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) {
                 Task {
@@ -99,6 +123,7 @@ struct EntryEditor: View {
                     Picker("Entry", selection: $kind) {
                         Text("Meal").tag("meal")
                         Text("Insulin").tag("insulin")
+                        Text("Exercise").tag("exercise")
                     }
                     .pickerStyle(.segmented)
                 }
@@ -107,6 +132,7 @@ struct EntryEditor: View {
         // The window keeps its state between uses, so a new entry starts at the current time each
         // time it comes forward unless the time was picked by hand.
         .onAppear { refreshTime() }
+        .onChange(of: kind) { if time > latest { time = Date(); timeEdited = false } }
         .onChange(of: activeState) { if activeState == .key { refreshTime() } }
         .task(id: suggestsDose ? carbs ?? 0 : -1) { await loadSuggestion() }
     }
@@ -177,6 +203,12 @@ struct EntryEditor: View {
 
     @ViewBuilder private var doseSection: some View {
         Section {
+            if let ex = store.exercise(near: time) {
+                Label(ex.isPlanned ? "\(ex.title), planned for \(ex.timestamp.formatted(date: .omitted, time: .shortened))"
+                                   : "\(ex.title), \(ex.end > Date() ? "in progress" : "ended \(ex.end.formatted(.relative(presentation: .named)))")",
+                      systemImage: ex.symbol)
+                    .foregroundStyle(ex.tint)
+            }
             if suggestsDose, (carbs ?? 0) > 0 {
                 if let s = suggestion {
                     DoseSuggestionView(store: store, suggestion: s, carbs: carbs ?? 0)
@@ -217,6 +249,30 @@ struct EntryEditor: View {
                         .frame(width: 56)
                     Stepper("Units", value: $units, in: 0...100, step: 0.5).labelsHidden()
                 }
+            }
+            TextField("Note", text: $note, prompt: Text("Optional"))
+        }
+    }
+
+    // MARK: exercise
+
+    private var exerciseSection: some View {
+        Section("Exercise") {
+            Picker("Activity", selection: $activity) {
+                ForEach(Activity.allCases, id: \.self) { Label($0.name, systemImage: $0.symbol).tag($0.rawValue) }
+            }
+            LabeledContent("Duration") {
+                HStack(spacing: 6) {
+                    TextField("Duration", value: $minutes, format: .number)
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 56)
+                    Text("min").foregroundStyle(.secondary)
+                    Stepper("Duration", value: $minutes, in: 0...600, step: 5).labelsHidden()
+                }
+            }
+            Picker("Intensity", selection: $intensity) {
+                ForEach(intensities, id: \.self) { Text($0.capitalized).tag($0) }
             }
             TextField("Note", text: $note, prompt: Text("Optional"))
         }
@@ -286,14 +342,19 @@ struct EntryEditor: View {
 
     private func add() async throws {
         var event = GlucoseStore.NewEvent(kind: kind, timestamp: time, note: note.isEmpty ? nil : note)
-        if isMeal {
+        switch kind {
+        case "meal":
             event.carbs = carbs
             event.estimate = estimate
             if let photo, let data = jpegData(photo) {
                 event.photo = data.base64EncodedString()
                 event.mediaType = "image/jpeg"
             }
-        } else {
+        case "exercise":
+            event.activity = activity
+            event.minutes = minutes
+            event.intensity = intensity
+        default:
             event.units = units
             event.insulinType = insulinType
         }
@@ -305,7 +366,8 @@ struct EntryEditor: View {
 
     private func change(for existing: GlucoseEvent) -> GlucoseStore.EventChange {
         var c = GlucoseStore.EventChange(timestamp: time, note: note)
-        if isMeal {
+        switch kind {
+        case "meal":
             if let carbs { c.carbs = carbs } else { c.clearCarbs = true }
             if estimate != existing.estimate { c.estimate = estimate }
             if let photo, let data = jpegData(photo) {
@@ -314,7 +376,11 @@ struct EntryEditor: View {
             } else if existing.photo != nil && !keepsPhoto {
                 c.removePhoto = true
             }
-        } else {
+        case "exercise":
+            c.activity = activity
+            c.minutes = minutes
+            c.intensity = intensity
+        default:
             c.units = units
             c.insulinType = insulinType
         }
@@ -327,6 +393,7 @@ struct EntryEditor: View {
 
     private func reset() {
         note = ""; photo = nil; carbs = nil; estimate = nil; units = 1; time = Date(); timeEdited = false
+        activity = "walk"; minutes = 30; intensity = "moderate"
         suggestion = nil; logDose = false; doseEdited = false
     }
 }
@@ -346,7 +413,7 @@ struct DoseSuggestionView: View {
             Text("Suggested dose")
             Text(basis)
         }
-        if let warning = s.warning {
+        ForEach([s.warning, s.exercise?.warning].compactMap { $0 }, id: \.self) { warning in
             Label(warning, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
@@ -361,6 +428,7 @@ struct DoseSuggestionView: View {
                 if s.activeDeducted > 0 {
                     step("Insulin still active: \(formatUnits(s.activeInsulin)) u, less what \(s.carbsOnBoard) g still digesting needs", -s.activeDeducted)
                 }
+                if let ex = s.exercise { step(ex.label, -ex.units) }
                 Divider().gridCellUnsizedAxes(.horizontal)
                 GridRow {
                     Text("Rounded down to the nearest half unit").foregroundStyle(.secondary)

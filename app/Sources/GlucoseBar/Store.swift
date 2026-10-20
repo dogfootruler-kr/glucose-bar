@@ -17,7 +17,8 @@ final class GlucoseStore: ObservableObject {
     @Published var stats: StatsResponse?
     @Published var fetchError: String?
     @Published var meals: [Meal] = []
-    /// Meals and insulin from the last 30 days, oldest first.
+    @Published var sessions: [Exercise] = []
+    /// Meals, insulin and exercise from the last 30 days (and exercise planned ahead), oldest first.
     @Published var entries: [GlucoseEvent] = []
     @Published var summary: Summary?
     @Published var aiAvailable = false
@@ -51,6 +52,7 @@ final class GlucoseStore: ObservableObject {
             stats = try await get("/stats?low=\(targetLow)&high=\(targetHigh)")
             meals = try await get("/meals?days=30&low=\(targetLow)&high=\(targetHigh)")
             entries = try await get("/events?hours=720")
+            sessions = (try? await get("/exercise?days=30&low=\(targetLow)")) ?? []  // older servers don't have it
             aiAvailable = state?.aiAvailable ?? false
             if Date().timeIntervalSince(lastSummaryFetch) > 600 { await refreshSummary() }
             fetchError = nil
@@ -58,7 +60,7 @@ final class GlucoseStore: ObservableObject {
         } catch {
             fetchError = "Server unreachable"
         }
-        alerts.evaluate(reading: reading, forecast: state?.forecast, stale: isStale, staleSince: staleSince)
+        alerts.evaluate(reading: reading, forecast: state?.forecast, postExercise: postExercise, stale: isStale, staleSince: staleSince)
     }
 
     func refreshSummary() async {
@@ -91,11 +93,27 @@ final class GlucoseStore: ObservableObject {
     func insulinToday() -> (rapid: Double, long: Double) {
         let start = Calendar.current.startOfDay(for: Date())
         var rapid = 0.0, long = 0.0
-        for e in entries where !e.isMeal && e.timestamp >= start {
+        for e in entries where e.isInsulin && e.timestamp >= start {
             if e.insulinType == "long" { long += e.units ?? 0 } else { rapid += e.units ?? 0 }
         }
         return (rapid, long)
     }
+
+    /// Minutes of exercise done today, and the next planned session.
+    func exerciseToday() -> (minutes: Double, next: GlucoseEvent?) {
+        let start = Calendar.current.startOfDay(for: Date())
+        let done = entries.filter { $0.isExercise && !$0.isPlanned && $0.timestamp >= start }.compactMap(\.minutes).reduce(0, +)
+        return (done, entries.first(where: \.isPlanned))
+    }
+
+    /// The exercise closest to `date` that ended up to 3 hours before it or starts up to 2 hours after it.
+    func exercise(near date: Date) -> GlucoseEvent? {
+        func gap(_ e: GlucoseEvent) -> TimeInterval { max(0, e.timestamp.timeIntervalSince(date), date.timeIntervalSince(e.end)) }
+        return entries.filter { $0.isExercise && gap($0) <= ($0.end < date ? 3 : 2) * 3600 }.min { gap($0) < gap($1) }
+    }
+
+    /// Set while low alerts come earlier after exercise.
+    var postExercise: PostExercise? { state?.postExercise.flatMap { $0.until > Date() ? $0 : nil } }
 
     struct NewEvent: Encodable {
         var kind: String
@@ -103,6 +121,9 @@ final class GlucoseStore: ObservableObject {
         var carbs: Double?
         var units: Double?
         var insulinType: String?
+        var activity: String?
+        var minutes: Double?
+        var intensity: String?
         var note: String?
         var photo: String?
         var mediaType: String?
@@ -122,6 +143,9 @@ final class GlucoseStore: ObservableObject {
         var clearCarbs = false
         var units: Double?
         var insulinType: String?
+        var activity: String?
+        var minutes: Double?
+        var intensity: String?
         var note: String?
         var photo: String?
         var mediaType: String?
@@ -134,6 +158,9 @@ final class GlucoseStore: ObservableObject {
             if clearCarbs { try c.encodeNil(forKey: .carbs) } else { try c.encodeIfPresent(carbs, forKey: .carbs) }
             try c.encodeIfPresent(units, forKey: .units)
             try c.encodeIfPresent(insulinType, forKey: .insulinType)
+            try c.encodeIfPresent(activity, forKey: .activity)
+            try c.encodeIfPresent(minutes, forKey: .minutes)
+            try c.encodeIfPresent(intensity, forKey: .intensity)
             try c.encodeIfPresent(note, forKey: .note)
             try c.encodeIfPresent(photo, forKey: .photo)
             try c.encodeIfPresent(mediaType, forKey: .mediaType)
@@ -141,7 +168,9 @@ final class GlucoseStore: ObservableObject {
             try c.encodeIfPresent(estimate, forKey: .estimate)
         }
 
-        enum CodingKeys: String, CodingKey { case timestamp, carbs, units, insulinType, note, photo, mediaType, removePhoto, estimate }
+        enum CodingKeys: String, CodingKey {
+            case timestamp, carbs, units, insulinType, activity, minutes, intensity, note, photo, mediaType, removePhoto, estimate
+        }
     }
 
     func updateEvent(_ id: Int, _ change: EventChange) async throws {
@@ -174,6 +203,7 @@ final class GlucoseStore: ObservableObject {
         return NSImage(data: data)
     }
     func meal(_ id: Int) -> Meal? { meals.first { $0.id == id } }
+    func exerciseImpact(_ id: Int) -> ExerciseImpact? { sessions.first { $0.id == id }?.impact }
 
     func doseSuggestion(carbs: Double) async throws -> DoseSuggestion {
         try await fetch("/dose?carbs=\(carbs)&target=\(defaults.integer(forKey: "doseTarget"))&low=\(targetLow)")

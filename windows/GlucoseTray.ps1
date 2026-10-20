@@ -18,7 +18,7 @@ if (Test-Path $ConfigPath) {
 }
 $Server = $Config.server.TrimEnd('/')
 
-$State = @{ reading = $null; error = $null; lastAlert = @{}; snoozeUntil = [DateTime]::MinValue; iconHandle = [IntPtr]::Zero }
+$State = @{ reading = $null; post = $null; slope = $null; error = $null; lastAlert = @{}; snoozeUntil = [DateTime]::MinValue; iconHandle = [IntPtr]::Zero }
 
 function Format-Glucose([int]$mgdl) {
     if ($Config.mmol) { return ($mgdl / 18.0182).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) }
@@ -66,6 +66,8 @@ function Update-Glucose {
     try {
         $resp = Invoke-RestMethod -Uri "$Server/glucose?hours=1" -TimeoutSec 10
         $State.reading = $resp.reading
+        $State.post = $resp.postExercise
+        $State.slope = if ($resp.forecast) { $resp.forecast.slope } else { $null }
         $State.error = $resp.error
     } catch {
         $State.error = "Can't reach $Server"
@@ -102,6 +104,11 @@ function Update-Glucose {
         Send-Alert 'stale' 'No glucose data' "Last reading was $age minutes ago." 30
     } elseif ($mgdl -le $Config.alertLow) {
         Send-Alert 'low' "Low: $(Format-Glucose $mgdl) $unit $($r.arrow)" 'Glucose is at or below your low alert.' 15
+    } elseif ($State.post -and (Get-Time $State.post.until) -gt (Get-Date).ToUniversalTime() -and
+              $mgdl -le ($Config.alertLow + [int]$State.post.raise) -and
+              (($null -ne $State.slope -and $State.slope -lt 0) -or ($null -ne $r.delta -and [int]$r.delta -lt 0))) {
+        # For a few hours after moderate or hard exercise, alert while falling towards the low threshold.
+        Send-Alert 'postExercise' "Falling after exercise: $(Format-Glucose $mgdl) $unit $($r.arrow)" "Low alerts come earlier after your $($State.post.label)." 20
     } elseif ($mgdl -ge $Config.alertHigh) {
         Send-Alert 'high' "High: $(Format-Glucose $mgdl) $unit $($r.arrow)" 'Glucose is at or above your high alert.' 60
     }

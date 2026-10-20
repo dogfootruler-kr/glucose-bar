@@ -22,7 +22,8 @@ struct GlucoseBarApp: App {
             EntryEditor(store: store).activatesWindow("log")
         }
         .windowResizability(.contentSize)
-        .windowToolbarStyle(.unified)
+        // The Meal / Insulin / Exercise picker takes the title's place; with both it overflows.
+        .windowToolbarStyle(.unified(showsTitle: false))
 
         WindowGroup("Edit Entry", id: "edit", for: Int.self) { $id in
             EditEntryWindow(store: store, id: id)

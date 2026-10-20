@@ -11,10 +11,11 @@ Phone (Libre app) → LibreView cloud → LibreLinkUp API → `server/libre_serv
 - Server: keeps every reading in `~/Library/Application Support/freestyle-bar/glucose.db`, CSV export, web page at `http://localhost:8765` (optionally shared on the local network)
 - Settings window: units, target range, alert thresholds, menu bar display, open at login
 - Forecast: 30-minute projection from the last 20 minutes (dotted line), with a "heading low" alert up to 20 minutes ahead
-- Meal and insulin log (popup `+` button or the web page, including from a phone camera); Claude estimates carbs from a photo
-- Journal: every meal and insulin entry by day, editable and deletable (here and on the web page), with each meal's glucose curve
+- Meal, insulin and exercise log (popup `+` button or the web page, including from a phone camera); Claude estimates carbs from a photo. Exercise (activity, minutes, light/moderate/hard) can be planned up to 6 hours ahead
+- Journal: every entry by day, editable and deletable (here and on the web page), with each meal's glucose curve and each exercise session's response, including lows in the 12 hours after
+- Exercise model: how much each kind of session lowers glucose, learned from your finished sessions (the drop beyond what logged carbs and insulin explain), plus insulin working harder for up to a day afterwards. Meal scores, dose verdicts and the learned ratios allow for it; after moderate or hard exercise, heading-low alerts come earlier for a few hours (also in the Windows tray)
 - Meal impact: a 0-100 food score from the first 90 minutes after eating, plus whether the rapid insulin around it was about right, too little or too much (judged from where glucose ended up, later correction doses and lows)
-- Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active. An estimate, not medical advice
+- Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active, and less for exercise in progress, planned within 2 hours or done recently. An estimate, not medical advice
 - Weekly summary written by Claude every Sunday from 19:00, or on demand
 
 Meal estimates and weekly summaries use the Claude Agent SDK, which runs on the Claude subscription you're logged into with `claude` (no API key).
@@ -43,8 +44,9 @@ If the short name doesn't resolve, use the full MagicDNS name (`glucose-work.<ta
 | `/glucose?hours=12` | latest reading, delta, sensor, history |
 | `/stats?low=70&high=180` | today / 7-day stats |
 | `/export.csv` | all stored readings |
-| `/events` | GET / POST meals and insulin; `PATCH` / `DELETE /events/<id>` |
+| `/events` | GET / POST meals, insulin and exercise; `PATCH` / `DELETE /events/<id>` |
 | `/meals?days=30` | meals with glucose impact and dose outcome |
+| `/exercise?days=30` | exercise with how glucose responded, during and in the 12 h after |
 | `/dose?carbs=50&target=120` | rapid-insulin suggestion and the learned ratios |
 | `/readings?start=&end=` | readings between two Unix times |
 | `/meals/estimate` | POST photo/text, returns a carb estimate |
