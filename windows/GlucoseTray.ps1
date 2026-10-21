@@ -1,11 +1,15 @@
 # GlucoseTray: glucose in the Windows system tray, read from a GlucoseBar server
 # (the Mac running server/libre_server.py, reached over Tailscale).
 # Settings: %APPDATA%\GlucoseTray\config.json (written by install.ps1).
+# Replaces itself with the latest GitHub release every 6 hours.
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -Namespace Native -Name User32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);'
 
 $ConfigPath = Join-Path $env:APPDATA 'GlucoseTray\config.json'
+$Repo = 'dogfootruler-kr/glucose-bar'
+$ScriptPath = $PSCommandPath
+$VersionPath = Join-Path $PSScriptRoot 'VERSION'
 $Config = [ordered]@{
     server = 'http://glucose-work:8765'
     mmol = $false
@@ -114,6 +118,23 @@ function Update-Glucose {
     }
 }
 
+function Update-Self {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $tag = (Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 20).tag_name
+        $current = if (Test-Path $VersionPath) { (Get-Content $VersionPath -Raw).Trim() } else { '' }
+        if (-not $tag -or $tag -eq $current) { return }
+        $new = Join-Path $env:TEMP 'GlucoseTray.ps1'
+        Invoke-WebRequest "https://github.com/$Repo/releases/download/$tag/GlucoseTray.ps1" -OutFile $new -UseBasicParsing -TimeoutSec 60
+        $null = [scriptblock]::Create((Get-Content $new -Raw))  # throws if the download isn't a whole script
+        Copy-Item $new $ScriptPath -Force
+        Set-Content $VersionPath $tag
+        Start-Process "$env:WINDIR\System32\conhost.exe" "--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File `"$ScriptPath`""
+        $Tray.Visible = $false
+        [System.Windows.Forms.Application]::Exit()
+    } catch { }  # offline or GitHub unreachable: try again next time
+}
+
 $Tray = New-Object System.Windows.Forms.NotifyIcon
 $Tray.Visible = $true
 
@@ -131,6 +152,12 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 60000
 $timer.add_Tick({ Update-Glucose })
 $timer.Start()
+
+# First update check a minute after starting, then every 6 hours.
+$updateTimer = New-Object System.Windows.Forms.Timer
+$updateTimer.Interval = 60000
+$updateTimer.add_Tick({ $updateTimer.Interval = 6 * 3600 * 1000; Update-Self })
+$updateTimer.Start()
 
 Update-Glucose
 [System.Windows.Forms.Application]::Run()

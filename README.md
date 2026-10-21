@@ -23,17 +23,31 @@ Meal estimates and weekly summaries use the Claude Agent SDK, which runs on the 
 ## Setup
 1. Install **LibreLinkUp** on your phone and create a *separate* account (a follower account).
 2. In the FreeStyle Libre app: Menu → Share / Connected Apps → LibreLinkUp → add that email. Accept the invite in LibreLinkUp, and accept any terms there.
-3. `./install.sh`, then enter the follower account's email and password. The password is stored in the Keychain.
+3. On the Mac that runs the server, enter the follower account's email and password when asked (the password is stored in the Keychain):
+   ```
+   curl -fsSL https://github.com/dogfootruler-kr/glucose-bar/releases/latest/download/install.sh | bash
+   ```
+   or `./install.sh` from a checkout.
 
 Logs: `~/Library/Logs/freestyle-bar.log`
+
+## Updates
+Installs come from the latest [GitHub release](https://github.com/dogfootruler-kr/glucose-bar/releases) and update themselves: a launchd agent on each Mac (log: `~/Library/Logs/freestyle-bar-update.log`) and GlucoseTray on Windows check every 6 hours and install a newer release. The installed server code lives in `~/Library/Application Support/freestyle-bar/current`; the version is shown in Settings → Server.
+
+To publish a release, tag a commit: `git tag v1.2.0 && git push origin v1.2.0`. The release workflow builds the app and attaches it.
+
+To run your own changes on a Mac, `./install.sh --dev` builds the app and installs the server from the checkout; the updater leaves a dev install alone until you run `./install.sh` again.
 
 ## Other computers (Tailscale)
 One Mac runs the server; other computers read from it over [Tailscale](https://tailscale.com), so nothing is exposed to the internet or the local network and there's one shared history and meal log.
 
 - **Server Mac**: `brew install tailscale`, then run `tailscaled --tun=userspace-networking` as a launchd agent (no admin rights needed) and `tailscale up --hostname=glucose-work`. Inbound tailnet connections reach `127.0.0.1:8765`, so `"lan"` can stay `false`.
-- **Other Mac**: install Tailscale, log in with the same account, then `./install.sh --remote http://glucose-work:8765` (app only). The address can also be changed in Settings → Server.
-- **Windows**: install Tailscale, log in, then double-click `windows/install.cmd`. GlucoseTray shows the value in the system tray (colour by range), the trend in the tooltip, low/high/no-data notifications, and opens the web page on click. Settings: `%APPDATA%\GlucoseTray\config.json`.
+- **Other Mac**: install Tailscale, log in with the same account, then run the installer with `--remote` (app only):
+  `curl -fsSL https://github.com/dogfootruler-kr/glucose-bar/releases/latest/download/install.sh | bash -s -- --remote http://glucose-work:8765`. The address can also be changed in Settings → Server.
+- **Windows**: install Tailscale, log in, then run `powershell -ExecutionPolicy Bypass -c "irm https://github.com/dogfootruler-kr/glucose-bar/releases/latest/download/install.ps1 | iex"` (or double-click `windows/install.cmd` in a checkout). GlucoseTray shows the value in the system tray (colour by range), the trend in the tooltip, low/high/no-data notifications, and opens the web page on click. Settings: `%APPDATA%\GlucoseTray\config.json`.
 - **Any browser or phone** on the tailnet: `http://glucose-work:8765`.
+
+The server only answers requests addressed to localhost, an IP address, a short name, or a `.local` / `.ts.net` name; add any other name under `"hosts"` in `~/.config/freestyle-bar/config.json`.
 
 If the short name doesn't resolve, use the full MagicDNS name (`glucose-work.<tailnet>.ts.net`) or the `100.x` address from `tailscale ip`.
 

@@ -174,6 +174,7 @@
 </main>
 <script>
 const LOW = 70, HIGH = 180;
+const JSON_HEADERS = { 'content-type': 'application/json' };  // the server only accepts JSON POSTs
 let hours = 6, mealSort = 'recent', meals = [], entries = [], exercise = [], aiAvailable = false;
 let plotted = [], plottedEvents = [], scaleX = null, scaleY = null;
 const $ = id => document.getElementById(id);
@@ -474,7 +475,7 @@ async function loadSummary() {
 $('genSummary').onclick = async () => {
   $('genSummary').disabled = true; $('genSummary').textContent = 'Writing…';
   try {
-    const r = await fetch(`/summary/generate?low=${LOW}&high=${HIGH}`, { method: 'POST' });
+    const r = await fetch(`/summary/generate?low=${LOW}&high=${HIGH}`, { method: 'POST', headers: JSON_HEADERS, body: '{}' });
     if (!r.ok) throw new Error((await r.json()).error);
     await loadSummary();
   } catch (e) { alert(e.message); }
@@ -602,7 +603,7 @@ $('estimate').onclick = async () => {
   if (!photoData && !text) { $('estimateResult').textContent = 'Add a photo or a description first.'; return; }
   $('estimate').disabled = true; $('estimateResult').textContent = 'Asking Claude…';
   try {
-    const r = await fetch('/meals/estimate', { method: 'POST', body: JSON.stringify({ photo: photoData, mediaType: 'image/jpeg', text: text || null }) });
+    const r = await fetch('/meals/estimate', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ photo: photoData, mediaType: 'image/jpeg', text: text || null }) });
     const est = await r.json();
     if (!r.ok) throw new Error(est.error);
     lastEstimate = est;
@@ -632,12 +633,12 @@ $('save').onclick = async () => {
   $('save').disabled = true;
   try {
     const r = editing
-      ? await fetch(`/events/${editing.id}`, { method: 'PATCH', body: JSON.stringify(body) })
-      : await fetch('/events', { method: 'POST', body: JSON.stringify({ kind, ...body }) });
+      ? await fetch(`/events/${editing.id}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) })
+      : await fetch('/events', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ kind, ...body }) });
     if (!r.ok) throw new Error((await r.json()).error);
     const dose = Number($('doseUnits').value);
     if (!editing && kind === 'meal' && $('alsoDose').checked && dose > 0) {
-      await fetch('/events', { method: 'POST', body: JSON.stringify({ kind: 'insulin', timestamp: body.timestamp, units: dose, insulinType: 'rapid' }) });
+      await fetch('/events', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ kind: 'insulin', timestamp: body.timestamp, units: dose, insulinType: 'rapid' }) });
     }
     $('saveMsg').textContent = 'Saved ✓';
     resetForm();

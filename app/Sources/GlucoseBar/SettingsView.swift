@@ -164,6 +164,11 @@ struct SettingsView: View {
                     Button("Open Web Page") { store.openWebPage() }
                     Button("Export All Readings as CSV…") { store.exportCSV() }
                 }
+                Section {
+                    LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")
+                } footer: {
+                    Text("New releases install automatically every 6 hours.")
+                }
             }
             .tabItem { Label("Server", systemImage: "server.rack") }
         }

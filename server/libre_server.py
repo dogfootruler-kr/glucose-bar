@@ -19,12 +19,15 @@ keeps every reading in a local SQLite database and serves it over HTTP.
   GET /summary, POST /summary/generate   weekly recap written by Claude
 
 Config: ~/.config/freestyle-bar/config.json
-  {"email": "...", "lan": false}
+  {"email": "...", "lan": false, "hosts": []}
 If "password" is omitted it is read from the macOS Keychain
 (service "freestyle-bar", account = email). "lan": true listens on all interfaces
 so other devices at home can open the web page.
+Requests must name this server by localhost, an IP address, a single-label name,
+a *.local or *.ts.net name, or one listed in "hosts" (blocks DNS rebinding), and
+POSTs must be JSON (so other websites open in a browser cannot send them).
 Glucose features use the standard library only; meal estimates and weekly summaries
-use the Claude Agent SDK with your Claude subscription login (installed in .venv by install.sh).
+use the Claude Agent SDK with your Claude subscription login (installed in a venv by install.sh).
 """
 import base64
 import hashlib
@@ -490,7 +493,32 @@ def poll_loop(client):
 
 # --- HTTP --------------------------------------------------------------------
 
+def allowed_host(header):
+    """Whether a Host header names this server, rather than a website's own domain
+    pointed at it (DNS rebinding)."""
+    host = (header or "").strip().lower()
+    if host.startswith("["):  # IPv6 literal
+        return True
+    host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    if host == "localhost" or "." not in host or host.replace(".", "").isdigit():
+        return True
+    return host.endswith((".local", ".ts.net")) or host in allowed_hosts
+
+
+allowed_hosts = set()
+
+
 class Handler(BaseHTTPRequestHandler):
+    def _trusted(self, json_body=False):
+        """Refuses requests a web page on another site could make from your browser."""
+        if not allowed_host(self.headers.get("host")):
+            self.send_error(403, "Unknown host")
+            return False
+        if json_body and not (self.headers.get("content-type") or "").lower().startswith("application/json"):
+            self.send_error(415, "Send JSON")
+            return False
+        return True
+
     def _json(self, payload, status=200):
         self._send(json.dumps(payload).encode(), "application/json", status=status)
 
@@ -511,6 +539,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if not self._trusted():
+            return
         url = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
         path = url.path.rstrip("/")
@@ -581,6 +611,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        if not self._trusted(json_body=True):
+            return
         path = urlparse(self.path).path.rstrip("/")
         q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
         try:
@@ -600,6 +632,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 400)
 
     def do_PATCH(self):
+        if not self._trusted(json_body=True):
+            return
         path = urlparse(self.path).path.rstrip("/")
         if not (path.startswith("/events/") and path.split("/")[-1].isdigit()):
             return self.send_error(404)
@@ -612,6 +646,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 400)
 
     def do_DELETE(self):
+        if not self._trusted():
+            return
         path = urlparse(self.path).path.rstrip("/")
         if path.startswith("/events/") and path.split("/")[-1].isdigit():
             delete_event(int(path.split("/")[-1]))
@@ -633,6 +669,7 @@ def main():
     client = LibreLinkUp(cfg["email"], cfg["password"], cfg.get("baseUrl"), cfg.get("version", "4.16.0"))
     threading.Thread(target=poll_loop, args=(client,), daemon=True).start()
     threading.Thread(target=summary_scheduler, daemon=True).start()
+    allowed_hosts.update(h.lower() for h in cfg.get("hosts", []))
     host = "0.0.0.0" if cfg.get("lan") else "127.0.0.1"
     log(f"serving on http://{host}:{PORT}/")
     ThreadingHTTPServer((host, PORT), Handler).serve_forever()

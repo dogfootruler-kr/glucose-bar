@@ -1,0 +1,22 @@
+# Pushing a tag such as v1.2.0 builds the app and publishes a release; every installed
+# Mac and Windows tray picks it up within 6 hours.
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: app/bundle.sh "$GITHUB_REF_NAME"
+      - run: |
+          mkdir dist
+          ditto -c -k --keepParent app/.build/GlucoseBar.app dist/GlucoseBar.zip
+          tar -czf dist/server.tar.gz --exclude __pycache__ server
+          cp install.sh windows/install.ps1 windows/GlucoseTray.ps1 dist/
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

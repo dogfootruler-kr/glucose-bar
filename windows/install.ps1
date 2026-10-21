@@ -1,11 +1,23 @@
 # Installs GlucoseTray for the current user: copies it to %LOCALAPPDATA%, writes the
-# settings file, adds it to Startup and starts it. Run through install.cmd.
+# settings file, adds it to Startup and starts it. Run through install.cmd, or without a
+# checkout (downloads the latest release):
+#   powershell -ExecutionPolicy Bypass -c "irm https://github.com/dogfootruler-kr/glucose-bar/releases/latest/download/install.ps1 | iex"
 $ErrorActionPreference = 'Stop'
 $dest = Join-Path $env:LOCALAPPDATA 'GlucoseTray'
 $cfgDir = Join-Path $env:APPDATA 'GlucoseTray'
 $cfgPath = Join-Path $cfgDir 'config.json'
 New-Item -ItemType Directory -Force $dest, $cfgDir | Out-Null
-Copy-Item (Join-Path $PSScriptRoot 'GlucoseTray.ps1') $dest -Force
+$local = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'GlucoseTray.ps1' }
+if ($local -and (Test-Path $local)) {
+    Copy-Item $local $dest -Force
+    Set-Content (Join-Path $dest 'VERSION') 'local'  # replaced by the latest release on the first update check
+} else {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $repo = 'dogfootruler-kr/glucose-bar'
+    $tag = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
+    Invoke-WebRequest "https://github.com/$repo/releases/download/$tag/GlucoseTray.ps1" -OutFile (Join-Path $dest 'GlucoseTray.ps1') -UseBasicParsing
+    Set-Content (Join-Path $dest 'VERSION') $tag
+}
 
 if (-not (Test-Path $cfgPath)) {
     $server = Read-Host 'Server address [http://glucose-work:8765]'
