@@ -114,9 +114,43 @@ enum Activity: String, CaseIterable {
         case .other: "figure.mixed.cardio"
         }
     }
+
+    /// What `intensity` looks like for this activity, e.g. "brisk, 5 to 6 km/h" for a moderate walk.
+    func example(_ intensity: String) -> String? {
+        switch (self, intensity) {
+        case (.walk, "light"): "strolling, under 4 km/h"
+        case (.walk, "moderate"): "brisk, 5 to 6 km/h"
+        case (.walk, "hard"): "uphill, hiking or 7 km/h and up"
+        case (.run, "light"): "a very easy jog"
+        case (.run, "moderate"): "a steady pace you could keep up for an hour"
+        case (.run, "hard"): "intervals, tempo runs or races"
+        case (.cycling, "light"): "an easy ride on the flat"
+        case (.cycling, "moderate"): "a steady commuting pace"
+        case (.cycling, "hard"): "hills or a fast group ride"
+        case (.strength, "light"): "light weights, lots of reps"
+        case (.strength, "moderate"): "working sets with rests between"
+        case (.strength, "hard"): "heavy lifts close to failure"
+        case (.swim, "light"): "easy laps with rests"
+        case (.swim, "moderate"): "steady laps without stopping"
+        case (.swim, "hard"): "fast sets"
+        case (.sport, "light"): "a casual knock-about"
+        case (.sport, "moderate"): "a friendly game"
+        case (.sport, "hard"): "a competitive match"
+        default: nil
+        }
+    }
 }
 
 let intensities = ["light", "moderate", "hard"]
+
+/// How to tell an intensity apart (the talk test) and what the app does with it.
+func intensityInfo(_ intensity: String) -> String {
+    switch intensity {
+    case "light": "You could chat or sing. Glucose dips a little; alerts stay as usual."
+    case "moderate": "You can talk but not sing; breathing faster, warm. Glucose falls during it, and low alerts come earlier for 4 hours after."
+    default: "Only a few words at a time. Sprints and heavy lifts can push glucose up at first, then it can drop for hours: low alerts come earlier for 6 hours after."
+    }
+}
 
 struct MealImpact: Decodable {
     let baseline: Int

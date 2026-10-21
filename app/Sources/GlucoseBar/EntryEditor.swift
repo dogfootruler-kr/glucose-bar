@@ -274,6 +274,11 @@ struct EntryEditor: View {
             Picker("Intensity", selection: $intensity) {
                 ForEach(intensities, id: \.self) { Text($0.capitalized).tag($0) }
             }
+            Text([Activity(rawValue: activity)?.example(intensity).map { "\($0.capitalizedFirst)." }, intensityInfo(intensity)]
+                .compactMap { $0 }.joined(separator: " "))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             TextField("Note", text: $note, prompt: Text("Optional"))
         }
     }

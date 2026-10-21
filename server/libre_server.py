@@ -249,12 +249,15 @@ def meals_with_impact(since_ts, high, low=70):
         if m["ts"] < since_ts:
             continue
         readings = history(m["ts"] - 15 * 60, m["ts"] + insights.MEAL_WINDOW)
-        m["impact"] = insights.meal_impact(m["ts"], readings, high, now, fx)
-        m["dose"] = dosing.meal_dose(m["ts"], meals, insulin, readings, low, high, now, params, fx)
-        exercised = fx.lowered(m["ts"], m["ts"] + insights.MEAL_WINDOW)
+        # Only exercise that can be named counts: a faint boost from the day before isn't "with exercise".
+        items = fx.describe(m["ts"] - 3600, m["ts"] + insights.MEAL_WINDOW)
+        meal_fx = fx if items else dosing.NO_EXERCISE
+        m["impact"] = insights.meal_impact(m["ts"], readings, high, now, meal_fx)
+        m["dose"] = dosing.meal_dose(m["ts"], meals, insulin, readings, low, high, now, params, meal_fx)
+        exercised = meal_fx.lowered(m["ts"], m["ts"] + insights.MEAL_WINDOW)
         m["exercise"] = None
         if abs(exercised) >= 10:
-            m["exercise"] = {"items": fx.describe(m["ts"] - 3600, m["ts"] + insights.MEAL_WINDOW), "effect": round(exercised)}
+            m["exercise"] = {"items": items, "effect": round(exercised)}
         out.append(m)
     return out
 

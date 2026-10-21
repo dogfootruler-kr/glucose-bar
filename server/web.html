@@ -139,6 +139,7 @@
         <div><label for="activity">Activity</label><select id="activity"></select></div>
         <div><label for="intensity">Intensity</label><select id="intensity"><option value="light">Light</option><option value="moderate" selected>Moderate</option><option value="hard">Hard</option></select></div>
       </div>
+      <div id="intensityInfo" class="small muted" style="margin-top:6px"></div>
       <label for="minutes">Duration (min)</label>
       <input id="minutes" type="number" inputmode="numeric" step="5" min="1" value="30">
       <label for="exNote">Note</label>
@@ -188,6 +189,26 @@ const planned = e => e.kind === 'exercise' && Date.parse(e.timestamp) > Date.now
 const entryName = e => e.kind === 'meal' ? e.note || 'Meal' : e.kind === 'exercise' ? `${act(e)[1]} · ${fmtMin(e.minutes)}`
   : `${fmtU(e.units || 0)} u ${e.insulinType === 'long' ? 'long-acting' : 'rapid'}`;
 $('activity').innerHTML = Object.entries(ACT).map(([k, [icon, name]]) => `<option value="${k}">${icon} ${name}</option>`).join('');
+const INTENSITY_EXAMPLE = {
+  walk: ['strolling, under 4 km/h', 'brisk, 5 to 6 km/h', 'uphill, hiking or 7 km/h and up'],
+  run: ['a very easy jog', 'a steady pace you could keep up for an hour', 'intervals, tempo runs or races'],
+  cycling: ['an easy ride on the flat', 'a steady commuting pace', 'hills or a fast group ride'],
+  strength: ['light weights, lots of reps', 'working sets with rests between', 'heavy lifts close to failure'],
+  swim: ['easy laps with rests', 'steady laps without stopping', 'fast sets'],
+  sport: ['a casual knock-about', 'a friendly game', 'a competitive match'],
+};
+const INTENSITY_INFO = {
+  light: 'You could chat or sing. Glucose dips a little; alerts stay as usual.',
+  moderate: 'You can talk but not sing; breathing faster, warm. Glucose falls during it, and low alerts come earlier for 4 hours after.',
+  hard: 'Only a few words at a time. Sprints and heavy lifts can push glucose up at first, then it can drop for hours: low alerts come earlier for 6 hours after.',
+};
+function showIntensityInfo() {
+  const i = $('intensity').value, ex = (INTENSITY_EXAMPLE[$('activity').value] || [])[['light', 'moderate', 'hard'].indexOf(i)];
+  $('intensityInfo').textContent = (ex ? `${ex[0].toUpperCase()}${ex.slice(1)}. ` : '') + INTENSITY_INFO[i];
+}
+$('activity').addEventListener('change', showIntensityInfo);
+$('intensity').addEventListener('change', showIntensityInfo);
+showIntensityInfo();
 
 const seg = $('seg');
 [3, 6, 12, 24].forEach(h => {
@@ -484,7 +505,7 @@ document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => { if (!e
 function resetForm() {
   ['mealNote', 'carbs', 'insNote', 'exNote', 'photo'].forEach(id => $(id).value = '');
   $('units').value = 1; $('itype').value = 'rapid';
-  $('activity').value = 'walk'; $('minutes').value = 30; $('intensity').value = 'moderate';
+  $('activity').value = 'walk'; $('minutes').value = 30; $('intensity').value = 'moderate'; showIntensityInfo();
   photoData = null; lastEstimate = null; removePhoto = false; editing = null;
   $('preview').style.display = 'none'; $('estimateResult').textContent = '';
   $('logTitle').textContent = 'Log'; $('cancelEdit').style.display = 'none'; $('deleteEntry').style.display = 'none';
@@ -504,7 +525,7 @@ function startEdit(e) {
     $('mealNote').value = e.note || ''; $('carbs').value = e.carbs ?? '';
     if (e.photo) { $('preview').src = e.photo; $('preview').style.display = 'block'; }
   } else if (e.kind === 'exercise') {
-    $('activity').value = e.activity || 'other'; $('minutes').value = e.minutes; $('intensity').value = e.intensity || 'moderate'; $('exNote').value = e.note || '';
+    $('activity').value = e.activity || 'other'; $('minutes').value = e.minutes; $('intensity').value = e.intensity || 'moderate'; $('exNote').value = e.note || ''; showIntensityInfo();
   } else {
     $('units').value = e.units; $('itype').value = e.insulinType || 'rapid'; $('insNote').value = e.note || '';
   }
