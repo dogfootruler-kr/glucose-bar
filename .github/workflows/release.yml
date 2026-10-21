@@ -8,7 +8,7 @@ permissions:
   contents: write
 jobs:
   release:
-    runs-on: macos-latest
+    runs-on: xcode-27  # same SDK as the Macs, so SwiftUI renders with the current look
     steps:
       - uses: actions/checkout@v4
       - run: app/bundle.sh "$GITHUB_REF_NAME"
