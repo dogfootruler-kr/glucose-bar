@@ -3,7 +3,7 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
-## v1.0.3
+## v1.0.3 — 2026-10-21
 - Check for Updates shows what's new in the latest release, with an Install button, instead of installing right away
 
 ## v1.0.2 — 2026-10-21
