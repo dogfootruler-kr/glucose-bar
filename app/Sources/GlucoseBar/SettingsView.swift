@@ -26,6 +26,7 @@ struct SettingsView: View {
     @State private var learnedError: String?
     @State private var updateStatus: String?
     @State private var checkingUpdates = false
+    @State private var available: Updater.Release?
 
     var body: some View {
         TabView {
@@ -174,6 +175,16 @@ struct SettingsView: View {
                                 .disabled(Updater.isDev || checkingUpdates)
                         }
                     }
+                    if let release = available {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("What's new in \(release.tag)").font(.headline)
+                            Text(release.notes.isEmpty ? "No release notes." : release.notes.replacingOccurrences(of: "\n- ", with: "\n• ").replacingOccurrences(of: "^- ", with: "• ", options: .regularExpression))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Button("Install \(release.tag)") { install(release) }
+                    }
                 } footer: {
                     Text(updateStatus ?? (Updater.isDev
                         ? "Built from a checkout, so it doesn't update. Run ./install.sh to switch to releases."
@@ -190,21 +201,27 @@ struct SettingsView: View {
     private func checkForUpdates() async {
         checkingUpdates = true
         defer { checkingUpdates = false }
+        available = nil
         updateStatus = "Checking…"
         guard let latest = await Updater.latest() else {
             updateStatus = "Couldn't reach GitHub. Try again later."
             return
         }
-        if latest == Updater.version {
+        if latest.tag == Updater.version {
             updateStatus = "Up to date."
-        } else if Updater.run() {
-            updateStatus = "Installing \(latest)… GlucoseBar will quit and reopen."
         } else {
-            updateStatus = "The updater isn't installed. Run the install command again."
+            available = latest
+            updateStatus = "\(latest.tag) is available."
         }
     }
 
-        private func glucoseStepper(_ label: String, _ value: Binding<Int>, _ range: ClosedRange<Int>) -> some View {
+    private func install(_ release: Updater.Release) {
+        updateStatus = Updater.run()
+            ? "Installing \(release.tag)… GlucoseBar will quit and reopen."
+            : "The updater isn't installed. Run the install command again."
+    }
+
+    private func glucoseStepper(_ label: String, _ value: Binding<Int>, _ range: ClosedRange<Int>) -> some View {
         Stepper(value: value, in: range, step: useMmol ? 9 : 5) {
             HStack {
                 Text(label)

@@ -4,7 +4,7 @@ import Foundation
 /// (and then quits and reopens this app) when it's newer than the installed one.
 enum Updater {
     static let label = "co.dnk.freestyle-bar.update"
-    static let releases = URL(string: "https://github.com/dogfootruler-kr/glucose-bar/releases/latest")!
+    static let api = URL(string: "https://api.github.com/repos/dogfootruler-kr/glucose-bar/releases/latest")!
 
     static var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev" }
     static var isDev: Bool { version == "dev" }
@@ -20,12 +20,21 @@ enum Updater {
         return task.terminationStatus == 0
     }
 
-    /// The latest release's tag, read from where GitHub redirects /releases/latest.
-    static func latest() async -> String? {
-        var req = URLRequest(url: releases)
-        req.httpMethod = "HEAD"
-        guard let (_, response) = try? await URLSession.shared.data(for: req),
-              let tag = response.url?.lastPathComponent, tag.hasPrefix("v") else { return nil }
-        return tag
+    struct Release: Decodable {
+        let tag: String
+        let notes: String
+        enum CodingKeys: String, CodingKey { case tag = "tag_name", notes = "body" }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            tag = try c.decode(String.self, forKey: .tag)
+            notes = ((try? c.decode(String.self, forKey: .notes)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    /// The latest release, with its notes (the CHANGELOG.md section for that version).
+    static func latest() async -> Release? {
+        guard let (data, response) = try? await URLSession.shared.data(from: api),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONDecoder().decode(Release.self, from: data)
     }
 }
