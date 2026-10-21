@@ -34,7 +34,7 @@ Logs: `~/Library/Logs/freestyle-bar.log`
 ## Updates
 Installs come from the latest [GitHub release](https://github.com/dogfootruler-kr/glucose-bar/releases) and update themselves: a launchd agent on each Mac checks at login, when GlucoseBar opens and every 6 hours (log: `~/Library/Logs/freestyle-bar-update.log`), and GlucoseTray on Windows a minute after it starts and every 6 hours. Settings → Server → Check for Updates (or *Check for updates* in the Windows tray menu) checks right away. The installed server code lives in `~/Library/Application Support/freestyle-bar/current`; the version is shown in Settings → Server.
 
-To publish a release, tag a commit: `git tag v1.2.0 && git push origin v1.2.0`. The release workflow builds the app and attaches it.
+To publish a release, add a `## v1.2.0` section to [CHANGELOG.md](CHANGELOG.md), commit, then tag: `git tag v1.2.0 && git push origin v1.2.0`. The release workflow builds the app, attaches it and uses that section as the release notes (it stops if the section is missing).
 
 To run your own changes on a Mac, `./install.sh --dev` builds the app and installs the server from the checkout; the updater leaves a dev install alone until you run `./install.sh` again.
 
