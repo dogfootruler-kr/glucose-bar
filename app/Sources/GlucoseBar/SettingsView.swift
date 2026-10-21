@@ -24,6 +24,8 @@ struct SettingsView: View {
     @AppStorage("doseTarget") private var doseTarget = 120
     @State private var learned: DoseSuggestion?
     @State private var learnedError: String?
+    @State private var updateStatus: String?
+    @State private var checkingUpdates = false
 
     var body: some View {
         TabView {
@@ -165,9 +167,17 @@ struct SettingsView: View {
                     Button("Export All Readings as CSV…") { store.exportCSV() }
                 }
                 Section {
-                    LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")
+                    LabeledContent("Version") {
+                        HStack {
+                            Text(Updater.version)
+                            Button("Check for Updates") { Task { await checkForUpdates() } }
+                                .disabled(Updater.isDev || checkingUpdates)
+                        }
+                    }
                 } footer: {
-                    Text("New releases install automatically every 6 hours.")
+                    Text(updateStatus ?? (Updater.isDev
+                        ? "Built from a checkout, so it doesn't update. Run ./install.sh to switch to releases."
+                        : "New releases install when GlucoseBar opens and every 6 hours."))
                 }
             }
             .tabItem { Label("Server", systemImage: "server.rack") }
@@ -177,7 +187,24 @@ struct SettingsView: View {
         .activatesWindow("settings")
     }
 
-    private func glucoseStepper(_ label: String, _ value: Binding<Int>, _ range: ClosedRange<Int>) -> some View {
+    private func checkForUpdates() async {
+        checkingUpdates = true
+        defer { checkingUpdates = false }
+        updateStatus = "Checking…"
+        guard let latest = await Updater.latest() else {
+            updateStatus = "Couldn't reach GitHub. Try again later."
+            return
+        }
+        if latest == Updater.version {
+            updateStatus = "Up to date."
+        } else if Updater.run() {
+            updateStatus = "Installing \(latest)… GlucoseBar will quit and reopen."
+        } else {
+            updateStatus = "The updater isn't installed. Run the install command again."
+        }
+    }
+
+        private func glucoseStepper(_ label: String, _ value: Binding<Int>, _ range: ClosedRange<Int>) -> some View {
         Stepper(value: value, in: range, step: useMmol ? 9 : 5) {
             HStack {
                 Text(label)

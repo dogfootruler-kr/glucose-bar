@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installs GlucoseBar from the latest GitHub release, and a launchd agent that installs
-# newer releases every 6 hours.
+# newer releases at login, when the app opens and every 6 hours.
 #   ./install.sh                 server + app on this Mac
 #   ./install.sh --remote URL    app only, reading another Mac's server (e.g. over Tailscale)
 #   ./install.sh --dev           server + app built from this checkout (skipped by the updater)
@@ -109,7 +109,7 @@ PL
   load "$LABEL" "$PLIST"
 }
 
-setup_updater() {
+write_updater_plist() {
   mkdir -p "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
   cat > "$UPDATE_PLIST" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
@@ -119,11 +119,16 @@ setup_updater() {
   <key>ProgramArguments</key><array>
     <string>/bin/bash</string><string>$CODE/install.sh</string><string>--update</string>
   </array>
+  <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>21600</integer>
   <key>StandardOutPath</key><string>$HOME/Library/Logs/freestyle-bar-update.log</string>
   <key>StandardErrorPath</key><string>$HOME/Library/Logs/freestyle-bar-update.log</string>
 </dict></plist>
 PL
+}
+
+setup_updater() {
+  write_updater_plist
   load "$UPDATE_LABEL" "$UPDATE_PLIST"
 }
 
@@ -135,6 +140,9 @@ load() {
 if [ "$MODE" = "update" ]; then
   current="$(cat "$CODE/VERSION" 2>/dev/null || true)"
   [ "$current" = "dev" ] && exit 0  # built from a checkout: leave it alone
+  # Keep the agent's settings current; launchd reads them at the next login (reloading here
+  # would stop this run).
+  write_updater_plist
   tag="$(latest_tag || true)"
   [ -n "$tag" ] && [ "$tag" != "$current" ] || exit 0
   echo "$(date '+%F %T') $current -> $tag"
@@ -154,5 +162,5 @@ fi
 if [ "$SERVER" = 1 ]; then setup_server; restart_server; fi
 setup_updater
 if [ "$SERVER" = 1 ]; then echo "Done. Logs: tail -f ~/Library/Logs/freestyle-bar.log"; else echo "Done. Reading from $REMOTE"; fi
-echo "Updates install automatically every 6 hours (log: ~/Library/Logs/freestyle-bar-update.log)."
+echo "Updates install automatically at login, when the app opens and every 6 hours (log: ~/Library/Logs/freestyle-bar-update.log)."
 echo "Add GlucoseBar to System Settings → General → Login Items to start it at login."

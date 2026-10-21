@@ -118,12 +118,15 @@ function Update-Glucose {
     }
 }
 
-function Update-Self {
+function Update-Self([switch]$Manual) {
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
         $tag = (Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 20).tag_name
         $current = if (Test-Path $VersionPath) { (Get-Content $VersionPath -Raw).Trim() } else { '' }
-        if (-not $tag -or $tag -eq $current) { return }
+        if (-not $tag -or $tag -eq $current) {
+            if ($Manual) { $Tray.ShowBalloonTip(5000, 'GlucoseTray', "Up to date ($current).", 'Info') }
+            return
+        }
         $new = Join-Path $env:TEMP 'GlucoseTray.ps1'
         Invoke-WebRequest "https://github.com/$Repo/releases/download/$tag/GlucoseTray.ps1" -OutFile $new -UseBasicParsing -TimeoutSec 60
         $null = [scriptblock]::Create((Get-Content $new -Raw))  # throws if the download isn't a whole script
@@ -132,7 +135,9 @@ function Update-Self {
         Start-Process "$env:WINDIR\System32\conhost.exe" "--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File `"$ScriptPath`""
         $Tray.Visible = $false
         [System.Windows.Forms.Application]::Exit()
-    } catch { }  # offline or GitHub unreachable: try again next time
+    } catch {  # offline or GitHub unreachable: try again next time
+        if ($Manual) { $Tray.ShowBalloonTip(5000, 'GlucoseTray', "Couldn't check for updates: $($_.Exception.Message)", 'Warning') }
+    }
 }
 
 $Tray = New-Object System.Windows.Forms.NotifyIcon
@@ -143,6 +148,7 @@ $menu.Items.Add('Open web page', $null, { Start-Process "$Server/" }) | Out-Null
 $menu.Items.Add('Refresh now', $null, { Update-Glucose }) | Out-Null
 $menu.Items.Add('Snooze alerts 30 min', $null, { $State.snoozeUntil = (Get-Date).AddMinutes(30) }) | Out-Null
 $menu.Items.Add('Edit settings (then Quit and reopen)', $null, { Start-Process notepad.exe $ConfigPath }) | Out-Null
+$menu.Items.Add("Check for updates (now $(if (Test-Path $VersionPath) { (Get-Content $VersionPath -Raw).Trim() } else { 'unknown' }))", $null, { Update-Self -Manual }) | Out-Null
 $menu.Items.Add('-') | Out-Null
 $menu.Items.Add('Quit', $null, { $Tray.Visible = $false; [System.Windows.Forms.Application]::Exit() }) | Out-Null
 $Tray.ContextMenuStrip = $menu

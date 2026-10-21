@@ -8,6 +8,7 @@ struct GlucoseBarApp: App {
         // Without this macOS tints windows with the part of the wallpaper behind them, so each
         // window comes out a different colour depending on where it sits.
         UserDefaults.standard.register(defaults: ["AppleReduceDesktopTinting": true])
+        Updater.run()  // check for a newer release on every launch
     }
 
     var body: some Scene {
