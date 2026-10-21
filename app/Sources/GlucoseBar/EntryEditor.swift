@@ -28,6 +28,8 @@ struct EntryEditor: View {
     // insulin logged together with a new meal
     @State private var suggestion: DoseSuggestion?
     @State private var suggestionError: String?
+    @State private var checkingHistory = false
+    @State private var historyError: String?
     @State private var logDose = false
     @State private var doseUnits: Double = 0
     @State private var doseEdited = false
@@ -134,7 +136,7 @@ struct EntryEditor: View {
         .onAppear { refreshTime() }
         .onChange(of: kind) { if time > latest { time = Date(); timeEdited = false } }
         .onChange(of: activeState) { if activeState == .key { refreshTime() } }
-        .task(id: suggestsDose ? carbs ?? 0 : -1) { await loadSuggestion() }
+        .task(id: suggestsDose ? "\(carbs ?? 0) \(note) \(estimate?.description ?? "")" : "") { await loadSuggestion() }
     }
 
     // MARK: meal
@@ -211,7 +213,8 @@ struct EntryEditor: View {
             }
             if suggestsDose, (carbs ?? 0) > 0 {
                 if let s = suggestion {
-                    DoseSuggestionView(store: store, suggestion: s, carbs: carbs ?? 0)
+                    DoseSuggestionView(store: store, suggestion: s, carbs: carbs ?? 0,
+                                       checkingHistory: checkingHistory, historyError: historyError)
                 } else if let suggestionError {
                     Text(suggestionError).foregroundStyle(.secondary)
                 } else {
@@ -286,6 +289,8 @@ struct EntryEditor: View {
     // MARK: actions
 
     private func loadSuggestion() async {
+        checkingHistory = false
+        historyError = nil
         guard suggestsDose, let carbs, carbs > 0 else { return }
         try? await Task.sleep(for: .milliseconds(400))  // typing
         guard !Task.isCancelled else { return }
@@ -297,7 +302,24 @@ struct EntryEditor: View {
         } catch {
             suggestion = nil
             suggestionError = error.localizedDescription
+            return
         }
+        // Then Claude's adjustment for how the same food went before, which needs something to match on.
+        let text = note.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty || estimate != nil else { return }
+        checkingHistory = true
+        try? await Task.sleep(for: .seconds(1))  // still typing the description
+        guard !Task.isCancelled else { return }
+        do {
+            let s = try await store.doseFromHistory(carbs: carbs, note: text.isEmpty ? nil : text, description: estimate?.description)
+            guard !Task.isCancelled else { return }
+            suggestion = s
+            if !doseEdited { doseUnits = s.units }
+        } catch {
+            guard !Task.isCancelled else { return }
+            historyError = "Couldn't compare with past meals: \(error.localizedDescription)"
+        }
+        checkingHistory = false
     }
 
     /// Fills in a previous meal's description, carbs, estimate and photo; the time stays now.
@@ -399,7 +421,7 @@ struct EntryEditor: View {
     private func reset() {
         note = ""; photo = nil; carbs = nil; estimate = nil; units = 1; time = Date(); timeEdited = false
         activity = "walk"; minutes = 30; intensity = "moderate"
-        suggestion = nil; logDose = false; doseEdited = false
+        suggestion = nil; logDose = false; doseEdited = false; checkingHistory = false; historyError = nil
     }
 }
 
@@ -408,6 +430,8 @@ struct DoseSuggestionView: View {
     @ObservedObject var store: GlucoseStore
     let suggestion: DoseSuggestion
     let carbs: Double
+    var checkingHistory = false
+    var historyError: String?
     @State private var expanded = false
 
     var body: some View {
@@ -423,6 +447,15 @@ struct DoseSuggestionView: View {
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        if let h = s.history {
+            Label(h.reason, systemImage: "clock.arrow.circlepath")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if checkingHistory {
+            HStack { Text("Checking how similar meals went…").foregroundStyle(.secondary); Spacer(); ProgressView().controlSize(.small) }
+        } else if let historyError {
+            Text(historyError).font(.footnote).foregroundStyle(.secondary)
+        }
         DisclosureGroup("How it's worked out", isExpanded: $expanded) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 step("\(Int(carbs)) g at 1 u per \(formatUnits(s.periodCarbRatio)) g (\(s.period))", s.carbUnits)
@@ -434,6 +467,9 @@ struct DoseSuggestionView: View {
                     step("Insulin still active: \(formatUnits(s.activeInsulin)) u, less what \(s.carbsOnBoard) g still digesting needs", -s.activeDeducted)
                 }
                 if let ex = s.exercise { step(ex.label, -ex.units) }
+                if let h = s.history, h.units != 0 {
+                    step("How \(h.meals) similar \(h.meals == 1 ? "meal" : "meals") went, according to Claude", h.units)
+                }
                 Divider().gridCellUnsizedAxes(.horizontal)
                 GridRow {
                     Text("Rounded down to the nearest half unit").foregroundStyle(.secondary)

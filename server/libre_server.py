@@ -16,6 +16,8 @@ keeps every reading in a local SQLite database and serves it over HTTP.
   GET /meals?days=30&high=180 meals with their glucose impact and how the insulin dose worked out
   GET /exercise?days=30&low=70 exercise with how glucose responded, during and in the 12 h after
   GET /dose?carbs=50&target=120&low=70   rapid-insulin suggestion learned from the history
+  POST /dose/history          {carbs, note?, description?, target?, low?, high?} -> the same, adjusted by Claude
+                              for how similar meals went
   GET /summary, POST /summary/generate   weekly recap written by Claude
 
 Config: ~/.config/freestyle-bar/config.json
@@ -32,6 +34,7 @@ use the Claude Agent SDK with your Claude subscription login (installed in a ven
 import base64
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import subprocess
@@ -291,6 +294,49 @@ def dose_suggestion(carbs, target, low):
     fc = insights.forecast(recent) if glucose is not None else None
     return dosing.suggest(params, carbs, glucose, fc["slope"] if fc else None, events(now - 8 * 3600), now, target, low,
                           exercise.dose_effect(fx, now))
+
+
+def past_meal(m):
+    """A logged meal as Claude sees it when comparing foods: what it was, the dose and how that went."""
+    est, dose, impact = m["estimate"] or {}, m["dose"] or {}, m["impact"] or {}
+    out = {
+        "id": m["id"],
+        "when": f"{datetime.fromtimestamp(m['ts']):%a %d %b %H:%M}",
+        "note": m["note"], "dish": est.get("description"), "items": [i["name"] for i in est.get("items", [])] or None,
+        "carbs": m["carbs"], "insulin": dose.get("units"), "minutesFromMeal": dose.get("minutesFromMeal"),
+        "laterUnits": dose.get("laterUnits"), "formulaToday": dose.get("suggested"),
+        "verdict": dose.get("verdict"), "outcome": dose.get("reason"),
+        "peak": impact.get("peak"), "exercise": bool(m["exercise"]),
+    }
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def dose_from_history(body):
+    """The formula's suggestion, then Claude's adjustment for how the same food went over the last 90 days.
+
+    Claude is kept between half and one and a half times the formula, and isn't asked when there's
+    nothing to match on, no past meal to compare with, or the formula says no insulin now.
+    """
+    carbs, low = float(body["carbs"]), int(body.get("low", 70))
+    s = dose_suggestion(carbs, int(body.get("target", 120)), low)
+    note, description = (body.get("note") or "").strip(), (body.get("description") or "").strip()
+    if not ai or not (note or description) or s["units"] <= 0:
+        return s
+    past = [past_meal(m) for m in meals_with_impact(int(time.time()) - 90 * 86400, int(body.get("high", 180)), low)
+            if (m["note"] or m["estimate"]) and m["dose"] and m["dose"]["verdict"]][-200:]
+    if not past:
+        return s
+    answer = ai.adjust_dose(
+        {"note": note or None, "dish": description or None, "carbs": carbs},
+        {k: s[k] for k in ("units", "carbUnits", "correctionUnits", "trendUnits", "activeDeducted", "periodCarbRatio", "period")},
+        past)
+    ids = {p["id"] for p in past}
+    matches = [i for i in answer["matches"] if i in ids]
+    units = s["units"]
+    if matches:
+        units = math.floor(max(s["units"] / 2, min(s["units"] * 1.5, answer["units"])) * 2) / 2
+    return {**s, "units": units, "formulaUnits": s["units"],
+            "history": {"units": units - s["units"], "reason": answer["reason"], "meals": len(matches)}}
 
 
 def post_exercise():
@@ -623,6 +669,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError("Install claude-agent-sdk to enable estimates.")
                 b = self._body()
                 self._json(ai.estimate_meal(b.get("photo"), b.get("mediaType") or "image/jpeg", b.get("text")))
+            elif path == "/dose/history":
+                self._json(dose_from_history(self._body()))
             elif path == "/summary/generate":
                 self._json(generate_summary(int(q.get("low", 70)), int(q.get("high", 180))))
             else:

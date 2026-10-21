@@ -3,6 +3,9 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
+## v1.1.0 — 2026-10-21
+- The suggested dose for a meal now allows for how the same food went before: Claude compares the meal with your last 90 days of meals, however you worded them ("half chicken (200g)" or "200g chicken"), and adjusts the formula's number for doses that ran high or low, with a one-line reason (kept between half and 1.5× the formula's number)
+
 ## v1.0.3 — 2026-10-21
 - Check for Updates shows what's new in the latest release, with an Install button, instead of installing right away
 

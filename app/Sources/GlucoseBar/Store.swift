@@ -209,6 +209,17 @@ final class GlucoseStore: ObservableObject {
         try await fetch("/dose?carbs=\(carbs)&target=\(defaults.integer(forKey: "doseTarget"))&low=\(targetLow)")
     }
 
+    struct DoseHistoryRequest: Encodable {
+        let carbs: Double; let note: String?; let description: String?; let target: Int; let low: Int; let high: Int
+    }
+
+    /// The dose suggestion adjusted by Claude for how the same food went before; slow, so asked after doseSuggestion.
+    func doseFromHistory(carbs: Double, note: String?, description: String?) async throws -> DoseSuggestion {
+        try await send("POST", "/dose/history", body: DoseHistoryRequest(
+            carbs: carbs, note: note, description: description,
+            target: defaults.integer(forKey: "doseTarget"), low: targetLow, high: targetHigh))
+    }
+
     func readings(from start: Date, to end: Date) async -> [Point] {
         (try? await get("/readings?start=\(Int(start.timeIntervalSince1970))&end=\(Int(end.timeIntervalSince1970))")) ?? []
     }

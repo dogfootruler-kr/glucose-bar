@@ -15,7 +15,7 @@ Phone (Libre app) → LibreView cloud → LibreLinkUp API → `server/libre_serv
 - Journal: every entry by day, editable and deletable (here and on the web page), with each meal's glucose curve and each exercise session's response, including lows in the 12 hours after
 - Exercise model: how much each kind of session lowers glucose, learned from your finished sessions (the drop beyond what logged carbs and insulin explain), plus insulin working harder for up to a day afterwards. Meal scores, dose verdicts and the learned ratios allow for it; after moderate or hard exercise, heading-low alerts come earlier for a few hours (also in the Windows tray)
 - Meal impact: a 0-100 food score from the first 90 minutes after eating, plus whether the rapid insulin around it was about right, too little or too much (judged from where glucose ended up, later correction doses and lows)
-- Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active, and less for exercise in progress, planned within 2 hours or done recently. An estimate, not medical advice
+- Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active, and less for exercise in progress, planned within 2 hours or done recently. When the meal has a description or photo estimate, Claude then compares it with the same food in your last 90 days of meals, however you worded it, and adjusts the dose for how those went (kept between half and 1.5× the formula's number). An estimate, not medical advice
 - Weekly summary written by Claude every Sunday from 19:00, or on demand
 
 Meal estimates and weekly summaries use the Claude Agent SDK, which runs on the Claude subscription you're logged into with `claude` (no API key).
@@ -62,6 +62,7 @@ If the short name doesn't resolve, use the full MagicDNS name (`glucose-work.<ta
 | `/meals?days=30` | meals with glucose impact and dose outcome |
 | `/exercise?days=30` | exercise with how glucose responded, during and in the 12 h after |
 | `/dose?carbs=50&target=120` | rapid-insulin suggestion and the learned ratios |
+| `POST /dose/history` | the same, adjusted by Claude for how similar past meals went |
 | `/readings?start=&end=` | readings between two Unix times |
 | `/meals/estimate` | POST photo/text, returns a carb estimate |
 | `/summary`, `/summary/generate` | weekly summary |

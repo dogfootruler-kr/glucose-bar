@@ -1,4 +1,4 @@
-"""Claude calls: carb estimate from a meal photo, and the weekly summary.
+"""Claude calls: carb estimate from a meal photo, dose adjusted for how similar meals went, and the weekly summary.
 
 Uses the Claude Agent SDK, which runs Claude Code under the hood and therefore uses the
 Claude subscription you're logged into with `claude` (no API key). Tools are disabled:
@@ -94,6 +94,44 @@ def estimate_meal(photo_b64=None, media_type="image/jpeg", text=None):
     if result.structured_output is not None:
         return result.structured_output
     return json.loads(text_out)
+
+
+DOSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "matches": {"type": "array", "items": {"type": "integer"}},
+        "units": {"type": "number"},
+        "reason": {"type": "string"},
+    },
+    "required": ["matches", "units", "reason"],
+    "additionalProperties": False,
+}
+
+DOSE_SYSTEM = """You adjust a rapid-insulin suggestion for one person with diabetes, using how the same food went for them before.
+
+You get the meal they're about to eat, the suggestion worked out by a formula from their carb ratio, current glucose,
+trend and active insulin, and their past meals: what they wrote, the dish name from a photo estimate, carbs,
+the rapid insulin taken with it ("insulin", "minutesFromMeal"), insulin needed later ("laterUnits"), what the
+formula would suggest for those carbs today ("formulaToday"), the verdict on the dose (ok / tooLittle / tooMuch /
+none = no insulin logged) with its reason, and the glucose peak.
+
+1. Find the past meals that are the same food, however they were written: "half chicken (200g)" and "200g chicken"
+   match; a different dish that shares one ingredient doesn't. Put their ids in "matches".
+2. If none match, return the formula's units unchanged.
+3. Otherwise see whether the same food has consistently needed more or less insulin per gram of carbs than the
+   formula assumes (insulin plus laterUnits for "tooLittle", less for "tooMuch", compared with formulaToday), and move
+   the carb part of the dose by that much. The correction, trend and active insulin are already right for now; don't
+   redo them. One meal is weak evidence: move only part of the way. Meals affected by exercise say little about the food.
+4. "units": the adjusted total, a multiple of 0.5, between half and one and a half times the formula's units.
+5. "reason": one short sentence naming the past meals and what happened, e.g. "The last 3 times you had roast chicken
+   with rice, 5 u ran high and you needed about 1.5 u more later." If nothing matched, say so in a few words."""
+
+
+def adjust_dose(meal, suggestion, past):
+    content = [{"type": "text", "text": "Meal now:\n" + json.dumps(meal) + "\n\nFormula suggestion:\n"
+                + json.dumps(suggestion) + "\n\nPast meals (local times):\n" + json.dumps(past, indent=0)}]
+    result, text = _run(_ask(content, _options(DOSE_SYSTEM, "medium", {"type": "json_schema", "schema": DOSE_SCHEMA})))
+    return result.structured_output if result.structured_output is not None else json.loads(text)
 
 
 SUMMARY_SYSTEM = """You write a short weekly glucose recap for one person with diabetes, from their CGM data.

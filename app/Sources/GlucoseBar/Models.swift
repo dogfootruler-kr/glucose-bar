@@ -213,6 +213,16 @@ struct DoseSuggestion: Decodable {
     let meals: Int
     let corrections: Int
     let days: Double
+    /// Set when Claude adjusted the dose for how similar meals went (POST /dose/history).
+    let formulaUnits: Double?
+    let history: DoseHistory?
+}
+
+/// Claude's change to the formula's dose, from past meals of the same food.
+struct DoseHistory: Decodable {
+    let units: Double
+    let reason: String
+    let meals: Int
 }
 
 extension MealImpact: Hashable {}

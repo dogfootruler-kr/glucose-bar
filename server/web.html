@@ -483,7 +483,7 @@ $('genSummary').onclick = async () => {
 };
 
 // --- logging ---
-let kind = 'meal', photoData = null, lastEstimate = null, editing = null, removePhoto = false, doseTimer = null;
+let kind = 'meal', photoData = null, lastEstimate = null, editing = null, removePhoto = false, doseTimer = null, doseSeq = 0;
 function setTime(date) {
   const d = new Date(date); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   $('time').value = d.toISOString().slice(0, 16);
@@ -545,6 +545,7 @@ $('deleteEntry').onclick = () => deleteEntry(editing);
 // Dose suggestion for a new meal eaten now
 function updateDose() {
   clearTimeout(doseTimer);
+  const seq = ++doseSeq;
   const carbs = Number($('carbs').value);
   const now = Math.abs(new Date($('time').value) - Date.now()) < 30 * 60e3;
   const show = !editing && kind === 'meal';
@@ -556,28 +557,46 @@ function updateDose() {
   $('exNear').style.display = ex ? '' : 'none';
   if (ex) $('exNear').textContent = `${act(ex)[0]} ${entryName(ex)}, ${planned(ex) ? 'planned for ' + fmtTime(ex.timestamp) : endT(ex) > Date.now() ? 'in progress' : 'ended at ' + fmtTime(endT(ex))}`;
   if (!show || !now || !(carbs > 0)) { $('doseBox').style.display = 'none'; return; }
+  const render = (s, extra) => {
+    const u = x => `${x >= 0 ? '+' : '−'}${fmtU(Math.abs(x))} u`;
+    const rows = [[`${Math.round(carbs)} g at 1 u per ${s.periodCarbRatio} g (${s.period})`, s.carbUnits]];
+    if (s.glucose != null) rows.push([`Now ${s.glucose}, target ${s.target}, 1 u per ${s.sensitivity}`, s.correctionUnits]);
+    if (s.trendUnits) rows.push(['Where the trend is heading in 30 min', s.trendUnits]);
+    if (s.activeDeducted > 0) rows.push([`Insulin still active: ${fmtU(s.activeInsulin)} u, less what ${s.carbsOnBoard} g still digesting needs`, -s.activeDeducted]);
+    if (s.exercise) rows.push([s.exercise.label, -s.exercise.units]);
+    if (s.history && s.history.units) rows.push([`How ${s.history.meals} similar ${s.history.meals === 1 ? 'meal' : 'meals'} went, according to Claude`, s.history.units]);
+    const basis = s.meals < 3 ? `Mostly the usual rules for your ${fmtU(s.dailyDose)} u a day, until more meals are logged` : `Learned from ${s.meals} meals over ${Math.round(s.days)} days`;
+    $('doseBox').innerHTML = `Suggested rapid insulin: <b>${fmtU(s.units)} u</b><div class="muted small">${basis}</div>`
+      + [s.warning, s.exercise && s.exercise.warning].filter(Boolean).map(w => `<div class="warn small">${esc(w)}</div>`).join('')
+      + (s.history ? `<div class="muted small">${esc(s.history.reason)}</div>` : extra ? `<div class="muted small">${esc(extra)}</div>` : '')
+      + `<details><summary class="small">How it's worked out</summary><table>${rows.map(([l, v]) => `<tr><td class="muted">${esc(l)}</td><td>${u(v)}</td></tr>`).join('')}<tr><td class="muted">Rounded down to the nearest half unit</td><td><b style="font-size:13px">${fmtU(s.units)} u</b></td></tr></table></details>`
+      + '<div class="muted small" style="margin-top:6px">An estimate from your own logs, not medical advice.</div>';
+    $('doseBox').style.display = '';
+    if (!$('alsoDose').checked) $('doseUnits').value = s.units;
+  };
   doseTimer = setTimeout(async () => {
+    let s;
     try {
       const r = await fetch(`/dose?carbs=${carbs}&target=120&low=${LOW}`);
-      const s = await r.json();
+      s = await r.json();
       if (!r.ok) throw new Error(s.error);
-      const u = x => `${x >= 0 ? '+' : '−'}${fmtU(Math.abs(x))} u`;
-      const rows = [[`${Math.round(carbs)} g at 1 u per ${s.periodCarbRatio} g (${s.period})`, s.carbUnits]];
-      if (s.glucose != null) rows.push([`Now ${s.glucose}, target ${s.target}, 1 u per ${s.sensitivity}`, s.correctionUnits]);
-      if (s.trendUnits) rows.push(['Where the trend is heading in 30 min', s.trendUnits]);
-      if (s.activeDeducted > 0) rows.push([`Insulin still active: ${fmtU(s.activeInsulin)} u, less what ${s.carbsOnBoard} g still digesting needs`, -s.activeDeducted]);
-      if (s.exercise) rows.push([s.exercise.label, -s.exercise.units]);
-      const basis = s.meals < 3 ? `Mostly the usual rules for your ${fmtU(s.dailyDose)} u a day, until more meals are logged` : `Learned from ${s.meals} meals over ${Math.round(s.days)} days`;
-      $('doseBox').innerHTML = `Suggested rapid insulin: <b>${fmtU(s.units)} u</b><div class="muted small">${basis}</div>`
-        + [s.warning, s.exercise && s.exercise.warning].filter(Boolean).map(w => `<div class="warn small">${esc(w)}</div>`).join('')
-        + `<details><summary class="small">How it's worked out</summary><table>${rows.map(([l, v]) => `<tr><td class="muted">${esc(l)}</td><td>${u(v)}</td></tr>`).join('')}<tr><td class="muted">Rounded down to the nearest half unit</td><td><b style="font-size:13px">${fmtU(s.units)} u</b></td></tr></table></details>`
-        + '<div class="muted small" style="margin-top:6px">An estimate from your own logs, not medical advice.</div>';
-      $('doseBox').style.display = '';
-      if (!$('alsoDose').checked) $('doseUnits').value = s.units;
-    } catch (e) { $('doseBox').innerHTML = `<span class="muted small">${esc(e.message)}</span>`; $('doseBox').style.display = ''; }
-  }, 400);
+    } catch (e) { $('doseBox').innerHTML = `<span class="muted small">${esc(e.message)}</span>`; $('doseBox').style.display = ''; return; }
+    if (seq !== doseSeq) return;
+    // Then Claude's adjustment for how the same food went before, which needs something to match on.
+    const note = $('mealNote').value.trim(), description = lastEstimate && lastEstimate.description;
+    if (!note && !description) return render(s);
+    render(s, 'Checking how similar meals went…');
+    try {
+      const r = await fetch('/dose/history', { method: 'POST', headers: JSON_HEADERS,
+        body: JSON.stringify({ carbs, note: note || null, description, target: 120, low: LOW, high: HIGH }) });
+      const h = await r.json();
+      if (!r.ok) throw new Error(h.error);
+      if (seq === doseSeq) render(h);
+    } catch (e) { if (seq === doseSeq) render(s, `Couldn't compare with past meals: ${e.message}`); }
+  }, 1000);
 }
 $('carbs').oninput = updateDose;
+$('mealNote').oninput = updateDose;
 $('time').onchange = updateDose;
 updateDose();
 
