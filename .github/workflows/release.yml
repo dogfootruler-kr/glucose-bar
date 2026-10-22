@@ -1,6 +1,7 @@
 # Pushing a tag such as v1.2.0 builds the apps and publishes a release; every installed
 # Mac, Windows tray and Android phone picks it up within 6 hours.
 name: Release
+run-name: Release ${{ github.ref_name }}
 on:
   push:
     tags: ['v*']
