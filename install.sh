@@ -2,7 +2,7 @@
 # Installs GlucoseBar from the latest GitHub release, and a launchd agent that installs
 # newer releases at login, when the app opens and every 6 hours.
 #   ./install.sh                 server + app on this Mac
-#   ./install.sh --remote URL    app only, reading another Mac's server (e.g. over Tailscale)
+#   ./install.sh --remote URL    app only, reading a server on another computer (e.g. over Tailscale)
 #   ./install.sh --dev           server + app built from this checkout (skipped by the updater)
 #   install.sh --update          what the updater runs: installs the latest release if it's newer
 # Without a checkout:

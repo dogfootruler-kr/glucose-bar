@@ -3,6 +3,11 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
+## v1.2.1 — 2026-10-22
+- The server isn't Mac-only: the README explains running it on Linux or Windows (password in `config.json`), and the apps' server settings no longer say it has to be a Mac
+- The server stops with a clear message when the password is missing outside macOS, instead of failing to run the Keychain tool
+- README screenshots of the Mac, Android and web apps
+
 ## v1.2.0 — 2026-10-22
 - Android app: glucose in the status bar and a home screen widget, low/high/heading-low/no-data alerts (lows can break through Do Not Disturb), chart, stats, journal, meal/insulin/exercise logging with photo carb estimates, dose suggestions and the weekly summary. Install `GlucoseBar.apk` from the release; it updates itself
 

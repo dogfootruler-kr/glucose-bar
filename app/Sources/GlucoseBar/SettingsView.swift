@@ -150,7 +150,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Server")
                 } footer: {
-                    Text("Leave empty to use the server on this Mac, or enter another Mac's address, such as http://glucose-work.<tailnet>.ts.net:8765")
+                    Text("Leave empty to use the server on this Mac, or enter the address of the computer running it, such as http://glucose-work.<tailnet>.ts.net:8765")
                 }
                 if !GlucoseStore.isRemote {
                     Section {

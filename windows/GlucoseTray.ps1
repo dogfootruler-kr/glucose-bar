@@ -1,5 +1,5 @@
 # GlucoseTray: glucose in the Windows system tray, read from a GlucoseBar server
-# (the Mac running server/libre_server.py, reached over Tailscale).
+# (the computer running server/libre_server.py, reached over Tailscale).
 # Settings: %APPDATA%\GlucoseTray\config.json (written by install.ps1).
 # Replaces itself with the latest GitHub release every 6 hours.
 

@@ -22,8 +22,8 @@ keeps every reading in a local SQLite database and serves it over HTTP.
 
 Config: ~/.config/freestyle-bar/config.json
   {"email": "...", "lan": false, "hosts": []}
-If "password" is omitted it is read from the macOS Keychain
-(service "freestyle-bar", account = email). "lan": true listens on all interfaces
+On macOS, if "password" is omitted it is read from the Keychain
+(service "freestyle-bar", account = email); on other systems put it in the file. "lan": true listens on all interfaces
 so other devices at home can open the web page.
 Requests must name this server by localhost, an IP address, a single-label name,
 a *.local or *.ts.net name, or one listed in "hosts" (blocks DNS rebinding), and
@@ -78,6 +78,8 @@ def load_config():
     with open(CONFIG_PATH) as f:
         cfg = json.load(f)
     if not cfg.get("password"):
+        if sys.platform != "darwin":
+            raise ValueError('no "password" (the Keychain is only used on macOS)')
         cfg["password"] = subprocess.run(
             ["security", "find-generic-password", "-s", "freestyle-bar", "-a", cfg["email"], "-w"],
             capture_output=True, text=True, check=True,

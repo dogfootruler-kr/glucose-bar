@@ -188,7 +188,7 @@ private fun ServerAddress(current: String) {
         keyboardActions = KeyboardActions(onDone = { apply() }),
         trailingIcon = { if (text != current) TextButton(::apply) { Text("Use") } },
     )
-    Caption("The Mac running the server, over Tailscale, such as ${Settings.DEFAULT_SERVER}")
+    Caption("The computer running the server, over Tailscale, such as ${Settings.DEFAULT_SERVER}")
 }
 
 /** The carb ratio and correction factor the server has learned. */

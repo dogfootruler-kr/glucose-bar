@@ -2,7 +2,21 @@
 
 FreeStyle Libre glucose in the macOS menu bar, the Windows tray and an Android status bar, read from the LibreView cloud (no phone debugging).
 
-Phone (Libre app) → LibreView cloud → LibreLinkUp API → `server/libre_server.py` (localhost:8765, SQLite history) → `GlucoseBar.app`
+Phone (Libre app) → LibreView cloud → LibreLinkUp API → `server/libre_server.py` (port 8765, SQLite history) → `GlucoseBar.app`, GlucoseTray, the Android app and the web page
+
+The server is a Python script (standard library only for glucose) and runs on any computer with Python 3: the installer sets it up on a Mac, and it runs the same way on Linux or Windows (see [Running the server elsewhere](#running-the-server-elsewhere)).
+
+<p>
+  <img src="docs/screenshots/mac-menu.png" width="250" alt="Menu bar dropdown: current value and trend, 6-hour chart, time in range, recent meals">
+  <img src="docs/screenshots/android.png" width="250" alt="Android app: current value, 12-hour chart, stats and recent entries">
+  <img src="docs/screenshots/android-dose.png" width="250" alt="Android new entry: a meal with a suggested dose adjusted from similar past meals">
+</p>
+<p>
+  <img src="docs/screenshots/mac-journal.png" width="500" alt="Journal window: entries by day with meal scores and a meal's glucose curve">
+  <img src="docs/screenshots/web.png" width="300" alt="Web page: current value and chart">
+</p>
+
+<sub>Screenshots use made-up demo data.</sub>
 
 ## Features
 - Menu bar: value, trend arrow, change over 5 min, 1–3h trend line, colour by target range; optional dot-only when in range
@@ -23,11 +37,11 @@ Meal estimates and weekly summaries use the Claude Agent SDK, which runs on the 
 ## Setup
 1. Install **LibreLinkUp** on your phone and create a *separate* account (a follower account).
 2. In the FreeStyle Libre app: Menu → Share / Connected Apps → LibreLinkUp → add that email. Accept the invite in LibreLinkUp, and accept any terms there.
-3. On the Mac that runs the server, enter the follower account's email and password when asked (the password is stored in the Keychain):
+3. On a Mac, this installs the app and the server; enter the follower account's email and password when asked (the password is stored in the Keychain):
    ```
    curl -fsSL https://github.com/dogfootruler-kr/glucose-bar/releases/latest/download/install.sh | bash
    ```
-   or `./install.sh` from a checkout.
+   or `./install.sh` from a checkout. To run the server on another computer instead, see [Running the server elsewhere](#running-the-server-elsewhere) and install the Mac app with `--remote`.
 
 Logs: `~/Library/Logs/freestyle-bar.log`
 
@@ -36,14 +50,27 @@ Logs: `~/Library/Logs/freestyle-bar.log`
 ## Updates
 Installs come from the latest [GitHub release](https://github.com/dogfootruler-kr/glucose-bar/releases) and update themselves: a launchd agent on each Mac checks at login, when GlucoseBar opens and every 6 hours (log: `~/Library/Logs/freestyle-bar-update.log`), GlucoseTray on Windows a minute after it starts and every 6 hours, and the Android app every 6 hours (the first update asks to confirm; after that it installs itself). Settings → Server → Check for Updates (or *Check for updates* in the Windows tray menu) checks right away. The installed server code lives in `~/Library/Application Support/freestyle-bar/current`; the version is shown in Settings → Server.
 
-To publish a release, add a `## v1.2.0` section to [CHANGELOG.md](CHANGELOG.md), commit, then tag: `git tag v1.2.0 && git push origin v1.2.0`. The release workflow builds the Mac app and the Android APK (signed with the key in the `ANDROID_*` repository secrets; a backup is in `~/.config/freestyle-bar/android-release.*` on the server Mac), attaches them and uses that section as the release notes (it stops if the section is missing).
+To publish a release, add a `## v1.2.0` section to [CHANGELOG.md](CHANGELOG.md), commit, then tag: `git tag v1.2.0 && git push origin v1.2.0`. The release workflow builds the Mac app and the Android APK (signed with the key in the `ANDROID_*` repository secrets; a backup is in `~/.config/freestyle-bar/android-release.*` on the server), attaches them and uses that section as the release notes (it stops if the section is missing).
 
 To run your own changes on a Mac, `./install.sh --dev` builds the app and installs the server from the checkout; the updater leaves a dev install alone until you run `./install.sh` again.
 
-## Other computers (Tailscale)
-One Mac runs the server; other computers read from it over [Tailscale](https://tailscale.com), so nothing is exposed to the internet or the local network and there's one shared history and meal log.
+## Running the server elsewhere
+The server needs Python 3 and nothing else for glucose; meal estimates and weekly summaries also need the Claude Agent SDK and a `claude` login on that computer. On Linux (on Windows, the same with `.venv\Scripts\python` and the config at `%USERPROFILE%\.config\freestyle-bar\config.json`):
 
-- **Server Mac**: `brew install tailscale`, then run `tailscaled --tun=userspace-networking` as a launchd agent (no admin rights needed) and `tailscale up --hostname=glucose-work`. Inbound tailnet connections reach `127.0.0.1:8765`, so `"lan"` can stay `false`.
+```
+git clone https://github.com/dogfootruler-kr/glucose-bar && cd glucose-bar
+python3 -m venv .venv && .venv/bin/pip install claude-agent-sdk   # optional, for the Claude features
+mkdir -p ~/.config/freestyle-bar
+echo '{"email": "you@example.com", "password": "..."}' > ~/.config/freestyle-bar/config.json
+.venv/bin/python server/libre_server.py
+```
+
+Outside macOS there's no Keychain, so the password goes in `config.json` (keep the file private, e.g. `chmod 600`). Readings are stored under `~/Library/Application Support/freestyle-bar/` in your home folder on every system. Keep it running with whatever the system offers (a systemd user service, Task Scheduler, …); the self-updater is Mac-only, so update with `git pull` and a restart.
+
+## Other computers (Tailscale)
+One computer runs the server; others read from it over [Tailscale](https://tailscale.com), so nothing is exposed to the internet or the local network and there's one shared history and meal log.
+
+- **Server**: on a Mac, `brew install tailscale`, then run `tailscaled --tun=userspace-networking` as a launchd agent (no admin rights needed) and `tailscale up --hostname=glucose-work`. Inbound tailnet connections reach `127.0.0.1:8765`, so `"lan"` can stay `false`. Elsewhere, install Tailscale the usual way and run `tailscale up --hostname=glucose-work`; with the normal (kernel) networking, tailnet connections arrive on the Tailscale address rather than localhost, so set `"lan": true` (and keep the port closed to the local network with the firewall if you like), or run `tailscaled` in userspace mode as on the Mac.
 - **Other Mac**: install Tailscale, log in with the same account, then run the installer with `--remote` (app only):
   `curl -fsSL https://github.com/dogfootruler-kr/glucose-bar/releases/latest/download/install.sh | bash -s -- --remote http://glucose-work:8765`. The address can also be changed in Settings → Server.
 - **Windows**: install Tailscale, log in, then run `powershell -ExecutionPolicy Bypass -c "irm https://github.com/dogfootruler-kr/glucose-bar/releases/latest/download/install.ps1 | iex"` (or double-click `windows/install.cmd` in a checkout). GlucoseTray shows the value in the system tray (colour by range), the trend in the tooltip, low/high/no-data notifications, and opens the web page on click. Settings: `%APPDATA%\GlucoseTray\config.json`.
