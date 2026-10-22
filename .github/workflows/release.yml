@@ -1,5 +1,5 @@
-# Pushing a tag such as v1.2.0 builds the app and publishes a release; every installed
-# Mac and Windows tray picks it up within 6 hours.
+# Pushing a tag such as v1.2.0 builds the apps and publishes a release; every installed
+# Mac, Windows tray and Android phone picks it up within 6 hours.
 name: Release
 on:
   push:
@@ -7,7 +7,34 @@ on:
 permissions:
   contents: write
 jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # The release keystore stays the same forever: a different key can't update installed phones.
+      - name: Build GlucoseBar.apk
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          export KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+          ./gradlew --no-daemon testDebugUnitTest assembleRelease -PversionName="${GITHUB_REF_NAME#v}"
+          mkdir -p ../dist && cp app/build/outputs/apk/release/app-release.apk ../dist/GlucoseBar.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/GlucoseBar.apk
+
   release:
+    needs: android
     runs-on: xcode-27  # same SDK as the Macs, so SwiftUI renders with the current look
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +50,10 @@ jobs:
           ditto -c -k --keepParent app/.build/GlucoseBar.app dist/GlucoseBar.zip
           tar -czf dist/server.tar.gz --exclude __pycache__ server
           cp install.sh windows/install.ps1 windows/GlucoseTray.ps1 dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: android
+          path: dist
       - run: gh release create "$GITHUB_REF_NAME" dist/* --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}

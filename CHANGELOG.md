@@ -3,6 +3,9 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
+## v1.2.0 — unreleased
+- Android app: glucose in the status bar and a home screen widget, low/high/heading-low/no-data alerts (lows can break through Do Not Disturb), chart, stats, journal, meal/insulin/exercise logging with photo carb estimates, dose suggestions and the weekly summary. Install `GlucoseBar.apk` from the release; it updates itself
+
 ## v1.1.0 — 2026-10-21
 - The suggested dose for a meal now allows for how the same food went before: Claude compares the meal with your last 90 days of meals, however you worded them ("half chicken (200g)" or "200g chicken"), and adjusts the formula's number for doses that ran high or low, with a one-line reason (kept between half and 1.5× the formula's number)
 
