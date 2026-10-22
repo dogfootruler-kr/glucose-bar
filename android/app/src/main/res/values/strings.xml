@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="widget_description">Current glucose, trend and the last 3 hours</string>
+    <string name="widget_description">Current glucose and trend, with the last 3 or 6 hours when larger</string>
 </resources>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Widget colours follow the wallpaper (Material You), light and dark. -->
+    <color name="widget_background">@android:color/system_neutral1_50</color>
+    <color name="widget_secondary">@android:color/system_neutral2_600</color>
+</resources>

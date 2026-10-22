@@ -231,7 +231,8 @@ object Store {
         refreshing.withLock {
             val s = settings.value
             try {
-                val hours = if (full) maxOf(s.chartHours, 3) else maxOf(s.sparklineHours, 3)
+                // The widget shows up to 6 hours.
+                val hours = if (full) maxOf(s.chartHours, 6) else 6
                 val state: ServerState = get("/glucose?hours=$hours")
                 _data.update { it.copy(state = state, aiAvailable = state.aiAvailable) }
                 if (full) {
