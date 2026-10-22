@@ -3,7 +3,7 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
-## v1.2.0 — unreleased
+## v1.2.0 — 2026-10-22
 - Android app: glucose in the status bar and a home screen widget, low/high/heading-low/no-data alerts (lows can break through Do Not Disturb), chart, stats, journal, meal/insulin/exercise logging with photo carb estimates, dose suggestions and the weekly summary. Install `GlucoseBar.apk` from the release; it updates itself
 
 ## v1.1.0 — 2026-10-21
