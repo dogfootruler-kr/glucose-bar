@@ -10,8 +10,8 @@ jobs:
   android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
@@ -28,7 +28,7 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
           ./gradlew --no-daemon testDebugUnitTest assembleRelease -PversionName="${GITHUB_REF_NAME#v}"
           mkdir -p ../dist && cp app/build/outputs/apk/release/app-release.apk ../dist/GlucoseBar.apk
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android
           path: dist/GlucoseBar.apk
@@ -37,7 +37,7 @@ jobs:
     needs: android
     runs-on: xcode-27  # same SDK as the Macs, so SwiftUI renders with the current look
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Release notes from CHANGELOG.md
         run: |
           awk -v tag="$GITHUB_REF_NAME" '/^## / { on = ($2 == tag); next } on' CHANGELOG.md > notes.md
@@ -50,7 +50,7 @@ jobs:
           ditto -c -k --keepParent app/.build/GlucoseBar.app dist/GlucoseBar.zip
           tar -czf dist/server.tar.gz --exclude __pycache__ server
           cp install.sh windows/install.ps1 windows/GlucoseTray.ps1 dist/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: android
           path: dist
