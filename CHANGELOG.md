@@ -3,6 +3,10 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
+## v1.2.2 — 2026-10-24
+- The web page has the GlucoseBar icon as its favicon
+- The web page's tab title shows the latest value and trend arrow (e.g. "123 → · Glucose"), or how old the reading is when it's more than 20 minutes old
+
 ## v1.2.1 — 2026-10-22
 - The server isn't Mac-only: the README explains running it on Linux or Windows (password in `config.json`), and the apps' server settings no longer say it has to be a Mac
 - The server stops with a clear message when the password is missing outside macOS, instead of failing to run the Keychain tool

@@ -61,6 +61,7 @@ DATA_DIR = os.path.expanduser("~/Library/Application Support/freestyle-bar")
 DB_PATH = os.path.join(DATA_DIR, "glucose.db")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 WEB_PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web.html")
+FAVICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon.svg")
 PORT = int(os.environ.get("FREESTYLE_BAR_PORT", "8765"))
 POLL_SECONDS = 60
 DEFAULT_BASE = "https://api.libreview.io"
@@ -595,6 +596,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "":
             with open(WEB_PAGE, "rb") as f:
                 self._send(f.read(), "text/html; charset=utf-8")
+        elif path == "/favicon.svg":
+            with open(FAVICON, "rb") as f:
+                self._send(f.read(), "image/svg+xml")
         elif path == "/glucose":
             hours = min(float(q.get("hours", 12)), 24 * 90)
             since = int(time.time() - hours * 3600)

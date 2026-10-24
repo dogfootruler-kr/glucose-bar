@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glucose</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
   :root { --bg: #f6f7f9; --card: #fff; --fg: #15171c; --muted: #6b7280; --grid: #e5e7eb;
           --line: #2563eb; --ok: #16a34a; --low: #dc2626; --high: #ea580c; --band: rgba(22,163,74,.10);
@@ -679,6 +680,7 @@ async function load() {
       $('delta').textContent = r.delta == null ? 'mg/dL' : `mg/dL  ${r.delta >= 0 ? '+' : ''}${r.delta}`;
       const mins = Math.round((Date.now() - Date.parse(r.timestamp)) / 60000);
       $('when').textContent = (mins < 1 ? 'Just now' : `${mins} min ago`) + (g.error ? ` · ${g.error}` : '');
+      document.title = mins > 20 ? `${r.mgdl} · ${mins} min ago` : `${r.mgdl} ${r.arrow} · Glucose`;
     }
     renderForecast(g.forecast, g.postExercise);
     renderInsulin(await (await fetch('/events?hours=24')).json());
@@ -694,6 +696,7 @@ async function load() {
     setMaxTime();
   } catch (e) {
     $('when').textContent = 'Server unreachable';
+    document.title = 'Glucose';
   }
 }
 load();
