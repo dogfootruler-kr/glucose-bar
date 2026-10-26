@@ -8,6 +8,8 @@ import SwiftUI
 @MainActor
 enum WindowActivation {
     private static var windows: [String: NSWindow] = [:]
+    /// Set once the app has finished launching.
+    static var launched = false
 
     static func register(_ window: NSWindow, as id: String) {
         guard windows[id] !== window else { return }
@@ -18,7 +20,8 @@ enum WindowActivation {
                 if windows.isEmpty { NSApp.setActivationPolicy(.accessory) }
             }
         }
-        bringForward(window)
+        // Without a MenuBarExtra scene SwiftUI opens the first window (New Entry) at launch.
+        if launched { bringForward(window) } else { DispatchQueue.main.async { window.close() } }
     }
 
     /// Call right after openWindow/openSettings: the window may already exist, or appear a moment later.
@@ -45,7 +48,7 @@ extension View {
     }
 }
 
-struct WindowReader: NSViewRepresentable {
+private struct WindowReader: NSViewRepresentable {
     let onWindow: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -62,36 +65,6 @@ struct WindowReader: NSViewRepresentable {
             super.viewDidMoveToWindow()
             if let window { onWindow?(window) }
         }
-    }
-}
-
-/// MenuBarExtra's panel can keep a stale height after the popup's content changes while it is
-/// closed (a forecast line or error appearing, a meal row going away), which shows up as transparent
-/// bands above and below the content. Refit the panel to its content each time it opens.
-@MainActor
-enum PopupFitter {
-    private static weak var tracked: NSWindow?
-
-    static func track(_ window: NSWindow) {
-        guard tracked !== window else { return }
-        tracked = window
-        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { _ in
-            MainActor.assumeIsolated {
-                fit(window)
-                // SwiftUI may still be updating the content (relative times, new readings) as it opens.
-                DispatchQueue.main.async { fit(window) }
-            }
-        }
-    }
-
-    private static func fit(_ window: NSWindow) {
-        guard let content = window.contentView else { return }
-        content.layoutSubtreeIfNeeded()
-        let size = content.fittingSize
-        guard size.height > 0 else { return }
-        var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
-        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
-        if frame != window.frame { window.setFrame(frame, display: true) }
     }
 }
 

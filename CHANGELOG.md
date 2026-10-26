@@ -3,6 +3,9 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
+## v1.2.3 — 2026-10-26
+- The menu bar popup always fits its content: it no longer shows a transparent band above or below it after the content changed while it was closed (it's now a standard popover, like other menu bar apps)
+
 ## v1.2.2 — 2026-10-24
 - The web page has the GlucoseBar icon as its favicon
 - The web page's tab title shows the latest value and trend arrow (e.g. "123 → · Glucose"), or how old the reading is when it's more than 20 minutes old

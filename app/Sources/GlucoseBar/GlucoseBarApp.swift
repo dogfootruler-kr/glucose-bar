@@ -2,7 +2,8 @@ import SwiftUI
 
 @main
 struct GlucoseBarApp: App {
-    @StateObject private var store = GlucoseStore()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var app
+    private var store: GlucoseStore { app.store }
 
     init() {
         // Without this macOS tints windows with the part of the wallpaper behind them, so each
@@ -12,13 +13,6 @@ struct GlucoseBarApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuContent(store: store, alerts: store.alerts)
-        } label: {
-            Image(nsImage: MenuBarLabel.image(for: store))
-        }
-        .menuBarExtraStyle(.window)
-
         Window("New Entry", id: "log") {
             EntryEditor(store: store).activatesWindow("log")
         }
@@ -47,5 +41,17 @@ struct GlucoseBarApp: App {
         Settings {
             SettingsView(store: store)
         }
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let store = GlucoseStore()
+    private var statusItem: StatusItemController?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        statusItem = StatusItemController(store: store)
+        // Windows SwiftUI opens by itself at launch arrive before this runs; let later ones through.
+        DispatchQueue.main.async { WindowActivation.launched = true }
     }
 }

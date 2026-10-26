@@ -7,7 +7,7 @@ struct MenuContent: View {
     @ObservedObject var store: GlucoseStore
     @ObservedObject var alerts: AlertManager
     @Environment(\.windowOpener) private var opener
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.closePopup) private var dismiss
     @AppStorage("chartHours") private var chartHours = 12
     @AppStorage("useMmol") private var useMmol = false
     @AppStorage("alertLow") private var alertLow = 70
@@ -30,7 +30,6 @@ struct MenuContent: View {
             menu.padding(.horizontal, 5).padding(.bottom, 5)
         }
         .frame(width: 340)
-        .background(WindowReader { PopupFitter.track($0) })
     }
 
     // MARK: reading
