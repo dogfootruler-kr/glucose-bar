@@ -12,13 +12,13 @@ keeps every reading in a local SQLite database and serves it over HTTP.
   PATCH /events/<id>          change fields (same as POST; "removePhoto": true drops the photo)
   DELETE /events/<id>
   GET /photos/<id>            meal photo
-  POST /meals/estimate        {photo?, mediaType?, text?} -> Claude carb estimate
+  POST /meals/estimate        {photo?, mediaType?, text?} -> AI carb estimate
   GET /meals?days=30&high=180 meals with their glucose impact and how the insulin dose worked out
   GET /exercise?days=30&low=70 exercise with how glucose responded, during and in the 12 h after
   GET /dose?carbs=50&target=120&low=70   rapid-insulin suggestion learned from the history
-  POST /dose/history          {carbs, note?, description?, target?, low?, high?} -> the same, adjusted by Claude
+  POST /dose/history          {carbs, note?, description?, target?, low?, high?} -> the same, adjusted by the AI
                               for how similar meals went
-  GET /summary, POST /summary/generate   weekly recap written by Claude
+  GET /summary, POST /summary/generate   weekly recap written by the AI
 
 Config: ~/.config/freestyle-bar/config.json
   {"email": "...", "lan": false, "hosts": []}
@@ -28,8 +28,9 @@ so other devices at home can open the web page.
 Requests must name this server by localhost, an IP address, a single-label name,
 a *.local or *.ts.net name, or one listed in "hosts" (blocks DNS rebinding), and
 POSTs must be JSON (so other websites open in a browser cannot send them).
-Glucose features use the standard library only; meal estimates and weekly summaries
-use the Claude Agent SDK with your Claude subscription login (installed in a venv by install.sh).
+Glucose features use the standard library only; meal estimates, dose adjustment and weekly
+summaries use the provider set under "ai" in config.json (see ai.py): Claude through the Agent SDK and your
+subscription login by default, or the Gemini API or any OpenAI-compatible API (Groq, Ollama, ...).
 """
 import base64
 import hashlib
@@ -47,14 +48,10 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import ai
 import dosing
 import exercise
 import insights
-
-try:
-    import ai
-except ImportError:  # claude-agent-sdk not installed: AI features off
-    ai = None
 
 CONFIG_PATH = os.path.expanduser("~/.config/freestyle-bar/config.json")
 DATA_DIR = os.path.expanduser("~/Library/Application Support/freestyle-bar")
@@ -300,7 +297,7 @@ def dose_suggestion(carbs, target, low):
 
 
 def past_meal(m):
-    """A logged meal as Claude sees it when comparing foods: what it was, the dose and how that went."""
+    """A logged meal as the AI sees it when comparing foods: what it was, the dose and how that went."""
     est, dose, impact = m["estimate"] or {}, m["dose"] or {}, m["impact"] or {}
     out = {
         "id": m["id"],
@@ -315,15 +312,15 @@ def past_meal(m):
 
 
 def dose_from_history(body):
-    """The formula's suggestion, then Claude's adjustment for how the same food went over the last 90 days.
+    """The formula's suggestion, then the AI's adjustment for how the same food went over the last 90 days.
 
-    Claude is kept between half and one and a half times the formula, and isn't asked when there's
+    The AI is kept between half and one and a half times the formula, and isn't asked when there's
     nothing to match on, no past meal to compare with, or the formula says no insulin now.
     """
     carbs, low = float(body["carbs"]), int(body.get("low", 70))
     s = dose_suggestion(carbs, int(body.get("target", 120)), low)
     note, description = (body.get("note") or "").strip(), (body.get("description") or "").strip()
-    if not ai or not (note or description) or s["units"] <= 0:
+    if not ai.available() or not (note or description) or s["units"] <= 0:
         return s
     past = [past_meal(m) for m in meals_with_impact(int(time.time()) - 90 * 86400, int(body.get("high", 180)), low)
             if (m["note"] or m["estimate"]) and m["dose"] and m["dose"]["verdict"]][-200:]
@@ -364,8 +361,8 @@ summary_lock = threading.Lock()
 
 
 def generate_summary(low=70, high=180):
-    if not ai:
-        raise RuntimeError("Install claude-agent-sdk to enable summaries.")
+    if not ai.available():
+        raise RuntimeError(ai.unavailable_reason())
     with summary_lock:
         start, end, prev_start = insights.week_bounds(datetime.now())
         s, e, p = int(start.timestamp()), int(end.timestamp()), int(prev_start.timestamp())
@@ -389,7 +386,7 @@ def summary_scheduler():
             now = datetime.now()
             last = latest_summary()
             last_created = datetime.fromisoformat(last["created"]).astimezone() if last else None
-            if now.weekday() == 6 and now.hour >= 19 and ai and ai.available() and (
+            if now.weekday() == 6 and now.hour >= 19 and ai.available() and (
                     not last_created or last_created.date() != now.date()):
                 generate_summary()
         except Exception as e:
@@ -615,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
             payload["forecast"] = fc
             payload["events"] = events(since)
             payload["postExercise"] = post_exercise()
-            payload["aiAvailable"] = bool(ai and ai.available())
+            payload["aiAvailable"] = ai.available()
             self._json(payload)
         elif path == "/stats":
             low, high = int(q.get("low", 70)), int(q.get("high", 180))
@@ -658,7 +655,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._json({"error": str(e)}, 400)
         elif path == "/summary":
-            self._json({"summary": latest_summary(), "aiAvailable": bool(ai and ai.available())})
+            self._json({"summary": latest_summary(), "aiAvailable": ai.available()})
         else:
             self.send_error(404)
 
@@ -671,8 +668,6 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/events":
                 self._json(add_event(self._body()), 201)
             elif path == "/meals/estimate":
-                if not ai:
-                    raise RuntimeError("Install claude-agent-sdk to enable estimates.")
                 b = self._body()
                 self._json(ai.estimate_meal(b.get("photo"), b.get("mediaType") or "image/jpeg", b.get("text")))
             elif path == "/dose/history":
@@ -718,6 +713,11 @@ def main():
         cfg = load_config()
     except Exception as e:
         sys.exit(f"Cannot load config {CONFIG_PATH}: {e}")
+    try:
+        ai.configure(cfg.get("ai"))
+    except ValueError as e:
+        sys.exit(f"Config {CONFIG_PATH}: {e}")
+    log(f"AI: {ai.describe()}")
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db().close()
     client = LibreLinkUp(cfg["email"], cfg["password"], cfg.get("baseUrl"), cfg.get("version", "4.16.0"))

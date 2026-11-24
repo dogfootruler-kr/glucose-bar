@@ -213,7 +213,7 @@ final class GlucoseStore: ObservableObject {
         let carbs: Double; let note: String?; let description: String?; let target: Int; let low: Int; let high: Int
     }
 
-    /// The dose suggestion adjusted by Claude for how the same food went before; slow, so asked after doseSuggestion.
+    /// The dose suggestion adjusted by the AI for how the same food went before; slow, so asked after doseSuggestion.
     func doseFromHistory(carbs: Double, note: String?, description: String?) async throws -> DoseSuggestion {
         try await send("POST", "/dose/history", body: DoseHistoryRequest(
             carbs: carbs, note: note, description: description,

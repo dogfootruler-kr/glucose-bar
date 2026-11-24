@@ -482,7 +482,7 @@ struct EntryDetail: View {
     }
 
     private func estimateBox(_ estimate: MealEstimate) -> some View {
-        GroupBox("Claude's estimate") {
+        GroupBox("AI estimate") {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(estimate.items, id: \.name) { fact($0.name, "\(Int($0.carbs)) g") }
                 if let note = estimate.note { Text(note).font(.caption).foregroundStyle(.secondary) }

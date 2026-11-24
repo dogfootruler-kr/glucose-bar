@@ -32,7 +32,7 @@ The server is a Python script (standard library only for glucose) and runs on an
 - Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active, and less for exercise in progress, planned within 2 hours or done recently. When the meal has a description or photo estimate, Claude then compares it with the same food in your last 90 days of meals, however you worded it, and adjusts the dose for how those went (kept between half and 1.5× the formula's number). An estimate, not medical advice
 - Weekly summary written by Claude every Sunday from 19:00, or on demand
 
-Meal estimates and weekly summaries use the Claude Agent SDK, which runs on the Claude subscription you're logged into with `claude` (no API key).
+Meal estimates, the dose adjustment from past meals and weekly summaries use Claude by default, through the Claude Agent SDK on the subscription you're logged into with `claude` (no API key). They can use the Gemini API or any OpenAI-compatible API instead (Groq, a local Ollama model, …): see [AI providers](#ai-providers).
 
 ## Setup
 1. Install **LibreLinkUp** on your phone and create a *separate* account (a follower account).
@@ -55,17 +55,31 @@ To publish a release, add a `## v1.2.0` section to [CHANGELOG.md](CHANGELOG.md),
 To run your own changes on a Mac, `./install.sh --dev` builds the app and installs the server from the checkout; the updater leaves a dev install alone until you run `./install.sh` again.
 
 ## Running the server elsewhere
-The server needs Python 3 and nothing else for glucose; meal estimates and weekly summaries also need the Claude Agent SDK and a `claude` login on that computer. On Linux (on Windows, the same with `.venv\Scripts\python` and the config at `%USERPROFILE%\.config\freestyle-bar\config.json`):
+The server needs Python 3 and nothing else for glucose. With Claude, meal estimates and weekly summaries also need the Claude Agent SDK and a `claude` login on that computer; the other [AI providers](#ai-providers) need only an API key. On Linux (on Windows, the same with `.venv\Scripts\python` and the config at `%USERPROFILE%\.config\freestyle-bar\config.json`):
 
 ```
 git clone https://github.com/dogfootruler-kr/glucose-bar && cd glucose-bar
-python3 -m venv .venv && .venv/bin/pip install claude-agent-sdk   # optional, for the Claude features
+python3 -m venv .venv && .venv/bin/pip install claude-agent-sdk   # only for the Claude provider
 mkdir -p ~/.config/freestyle-bar
-echo '{"email": "you@example.com", "password": "..."}' > ~/.config/freestyle-bar/config.json
+echo '{"email": "you@example.com", "password": "...", "ai": {"provider": "gemini", "apiKey": "..."}}' > ~/.config/freestyle-bar/config.json
 .venv/bin/python server/libre_server.py
 ```
 
 Outside macOS there's no Keychain, so the password goes in `config.json` (keep the file private, e.g. `chmod 600`). Readings are stored under `~/Library/Application Support/freestyle-bar/` in your home folder on every system. Keep it running with whatever the system offers (a systemd user service, Task Scheduler, …); the self-updater is Mac-only, so update with `git pull` and a restart.
+
+A free cloud VM works too, so no computer of yours has to stay on: an Oracle Cloud *Always Free* ARM instance (Seoul and Chuncheon regions in Korea) or a Google Cloud e2-micro, with the server as a systemd service, Tailscale for access and the Gemini provider for the AI features. Keep `"lan": false` and don't open port 8765 in the cloud firewall; Tailscale is the only way in.
+
+## AI providers
+Set under `"ai"` in `~/.config/freestyle-bar/config.json`, then restart the server. The server log says which provider it uses at startup (`AI: gemini (...)`).
+
+| Provider | Config | Notes |
+|---|---|---|
+| Claude (default) | `{"provider": "claude"}` | Claude Agent SDK on your `claude` subscription login; used when `"ai"` is missing and the SDK is installed |
+| Gemini | `{"provider": "gemini", "apiKey": "..."}` | Key from [Google AI Studio](https://aistudio.google.com/apikey) (or the `GEMINI_API_KEY` environment variable). Uses `gemini-flash-latest`, then `gemini-3.6-flash` and `gemini-flash-lite-latest` while the newer ones are overloaded or out of free quota. Google may use free-tier requests to improve its products; a paid key isn't used that way |
+| OpenAI-compatible | `{"provider": "openai", "baseUrl": "...", "model": "...", "apiKey": "..."}` | Groq (`https://api.groq.com/openai/v1`, e.g. `meta-llama/llama-4-scout-17b-16e-instruct`), Ollama (`http://localhost:11434/v1`, a vision model such as `qwen2.5vl:7b`, no key), OpenRouter, Cloudflare Workers AI or OpenAI. The model must read images for photo estimates and support JSON-schema output |
+| Off | `{"provider": "none"}` | Glucose, alerts, the journal, meal scores and the formula's dose suggestions all keep working |
+
+Optional keys for every provider: `"model"` (a name, or a list tried in order while the API is busy) and `"timeout"` in seconds (default 180; raise it for a local model on a small CPU). Busy answers (429 or 5xx) are retried twice before moving on to the next model.
 
 ## Other computers (Tailscale)
 One computer runs the server; others read from it over [Tailscale](https://tailscale.com), so nothing is exposed to the internet or the local network and there's one shared history and meal log.

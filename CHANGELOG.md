@@ -3,6 +3,11 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
+## v1.3.0 — 2026-11-24
+- The server can use the Gemini API or any OpenAI-compatible API (Groq, a local Ollama model, OpenRouter, …) instead of Claude for photo carb estimates, the dose adjustment from past meals and weekly summaries, so it can run on a free cloud VM without a Claude subscription. Set it under `"ai"` in `config.json` (see AI providers in the README); Claude stays the default
+- Gemini moves on from Gemini 3.8 Flash to 3.6 Flash and then 3.5 Flash-Lite while a model is overloaded or out of free quota, and busy answers are retried
+- The apps and web page no longer name Claude ("Estimate carbs", "AI estimate"), and say when AI isn't set up on the server
+
 ## v1.2.3 — 2026-10-26
 - The menu bar popup always fits its content: it no longer shows a transparent band above or below it after the content changed while it was closed (it's now a standard popover, like other menu bar apps)
 

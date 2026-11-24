@@ -210,14 +210,14 @@ data class DoseSuggestion(
     val meals: Int,
     val corrections: Int,
     val days: Double,
-    /** Set when Claude adjusted the dose for how similar meals went (POST /dose/history). */
+    /** Set when the AI adjusted the dose for how similar meals went (POST /dose/history). */
     val formulaUnits: Double? = null,
     val history: History? = null,
 ) {
     @Serializable
     data class Period(val carbRatio: Double, val meals: Int)
 
-    /** Claude's change to the formula's dose, from past meals of the same food. */
+    /** The AI's change to the formula's dose, from past meals of the same food. */
     @Serializable
     data class History(val units: Double, val reason: String, val meals: Int)
 }

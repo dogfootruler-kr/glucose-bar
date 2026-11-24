@@ -44,7 +44,7 @@ import kotlinx.coroutines.launch
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-/** The weekly summary Claude writes on the server every Sunday evening. */
+/** The weekly summary the AI writes on the server every Sunday evening. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SummaryView(nav: Nav) {
@@ -80,13 +80,13 @@ fun SummaryView(nav: Nav) {
                 Text("No summary yet", style = MaterialTheme.typography.titleMedium)
                 Caption("A summary of the past 7 days is written every Sunday evening.")
                 Button(::generate, enabled = !generating && data.aiAvailable) { Text("Write one now") }
-                if (!data.aiAvailable) Caption("Claude is unavailable: run `claude` once on the server Mac to log in.")
+                if (!data.aiAvailable) Caption("AI isn't set up on the server: see AI providers in the README.")
             } else {
                 val day = DateTimeFormatter.ofPattern("d MMMM").withZone(ZoneId.systemDefault())
                 val dayYear = DateTimeFormatter.ofPattern("d MMMM yyyy").withZone(ZoneId.systemDefault())
                 Caption("${day.format(s.periodStart)} – ${dayYear.format(s.periodEnd)}")
                 SelectionContainer { MarkdownText(s.text) }
-                Caption("Written by Claude ${DateUtils.getRelativeTimeSpanString(s.created.toEpochMilli())}")
+                Caption("Written ${DateUtils.getRelativeTimeSpanString(s.created.toEpochMilli())}")
             }
         }
     }

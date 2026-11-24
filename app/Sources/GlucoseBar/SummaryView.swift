@@ -11,7 +11,7 @@ struct SummaryView: View {
                         Text("\(s.periodStart.formatted(.dateTime.day().month(.wide))) – \(s.periodEnd.formatted(.dateTime.day().month(.wide).year()))")
                             .font(.subheadline).foregroundStyle(.secondary)
                         MarkdownText(s.text)
-                        Text("Written by Claude \(s.created.formatted(.relative(presentation: .named)))")
+                        Text("Written \(s.created.formatted(.relative(presentation: .named)))")
                             .font(.caption).foregroundStyle(.tertiary)
                             .padding(.top, 8)
                     }
@@ -42,7 +42,7 @@ struct SummaryView: View {
                         Label("Write New Summary", systemImage: "sparkles")
                     }
                     .disabled(!store.aiAvailable)
-                    .help(store.aiAvailable ? "Write a new summary of the past 7 days" : "Claude is unavailable: run `claude` once on the server Mac to log in")
+                    .help(store.aiAvailable ? "Write a new summary of the past 7 days" : "AI isn't set up on the server: see AI providers in the README")
                 }
             }
         }

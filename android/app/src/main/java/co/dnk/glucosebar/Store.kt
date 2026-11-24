@@ -312,7 +312,7 @@ object Store {
         return get("/dose?carbs=$carbs&target=${s.doseTarget}&low=${s.targetLow}")
     }
 
-    /** The dose suggestion adjusted by Claude for how the same food went before; slow, so asked after doseSuggestion. */
+    /** The dose suggestion adjusted by the AI for how the same food went before; slow, so asked after doseSuggestion. */
     suspend fun doseFromHistory(carbs: Double, note: String?, description: String?): DoseSuggestion {
         val s = settings.value
         val body = DoseHistoryRequest(carbs, note, description, s.doseTarget, s.targetLow, s.targetHigh)

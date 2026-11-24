@@ -164,7 +164,7 @@ struct EntryEditor: View {
                 Task { await runEstimate() }
             } label: {
                 HStack {
-                    Label("Estimate Carbs with Claude", systemImage: "sparkles")
+                    Label("Estimate Carbs", systemImage: "sparkles")
                     if estimating {
                         Spacer()
                         ProgressView().controlSize(.small)
@@ -180,7 +180,7 @@ struct EntryEditor: View {
             }
         } footer: {
             if !store.aiAvailable {
-                Text("Claude is unavailable. Run `claude` once on the server Mac to log in.")
+                Text("AI isn't set up on the server: see AI providers in the README.")
             } else if let note = estimate?.note {
                 Text(note)
             } else {
@@ -304,7 +304,7 @@ struct EntryEditor: View {
             suggestionError = error.localizedDescription
             return
         }
-        // Then Claude's adjustment for how the same food went before, which needs something to match on.
+        // Then the AI's adjustment for how the same food went before, which needs something to match on.
         let text = note.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty || estimate != nil else { return }
         checkingHistory = true
@@ -468,7 +468,7 @@ struct DoseSuggestionView: View {
                 }
                 if let ex = s.exercise { step(ex.label, -ex.units) }
                 if let h = s.history, h.units != 0 {
-                    step("How \(h.meals) similar \(h.meals == 1 ? "meal" : "meals") went, according to Claude", h.units)
+                    step("How \(h.meals) similar \(h.meals == 1 ? "meal" : "meals") went before", h.units)
                 }
                 Divider().gridCellUnsizedAxes(.horizontal)
                 GridRow {

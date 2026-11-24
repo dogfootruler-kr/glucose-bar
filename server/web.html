@@ -119,7 +119,7 @@
       <img id="preview" class="preview" alt="">
       <label for="mealNote">What did you eat?</label>
       <input id="mealNote" placeholder="e.g. Kimchi jjigae with rice">
-      <div class="actions"><button class="btn" id="estimate">✨ Estimate carbs with Claude</button></div>
+      <div class="actions"><button class="btn" id="estimate">✨ Estimate carbs</button></div>
       <div id="estimateResult" class="small muted"></div>
       <label for="carbs">Carbs (g)</label>
       <input id="carbs" type="number" inputmode="decimal" min="0">
@@ -565,7 +565,7 @@ function updateDose() {
     if (s.trendUnits) rows.push(['Where the trend is heading in 30 min', s.trendUnits]);
     if (s.activeDeducted > 0) rows.push([`Insulin still active: ${fmtU(s.activeInsulin)} u, less what ${s.carbsOnBoard} g still digesting needs`, -s.activeDeducted]);
     if (s.exercise) rows.push([s.exercise.label, -s.exercise.units]);
-    if (s.history && s.history.units) rows.push([`How ${s.history.meals} similar ${s.history.meals === 1 ? 'meal' : 'meals'} went, according to Claude`, s.history.units]);
+    if (s.history && s.history.units) rows.push([`How ${s.history.meals} similar ${s.history.meals === 1 ? 'meal' : 'meals'} went before`, s.history.units]);
     const basis = s.meals < 3 ? `Mostly the usual rules for your ${fmtU(s.dailyDose)} u a day, until more meals are logged` : `Learned from ${s.meals} meals over ${Math.round(s.days)} days`;
     $('doseBox').innerHTML = `Suggested rapid insulin: <b>${fmtU(s.units)} u</b><div class="muted small">${basis}</div>`
       + [s.warning, s.exercise && s.exercise.warning].filter(Boolean).map(w => `<div class="warn small">${esc(w)}</div>`).join('')
@@ -583,7 +583,7 @@ function updateDose() {
       if (!r.ok) throw new Error(s.error);
     } catch (e) { $('doseBox').innerHTML = `<span class="muted small">${esc(e.message)}</span>`; $('doseBox').style.display = ''; return; }
     if (seq !== doseSeq) return;
-    // Then Claude's adjustment for how the same food went before, which needs something to match on.
+    // Then the AI's adjustment for how the same food went before, which needs something to match on.
     const note = $('mealNote').value.trim(), description = lastEstimate && lastEstimate.description;
     if (!note && !description) return render(s);
     render(s, 'Checking how similar meals went…');
@@ -621,7 +621,7 @@ $('photo').onchange = () => {
 $('estimate').onclick = async () => {
   const text = $('mealNote').value.trim();
   if (!photoData && !text) { $('estimateResult').textContent = 'Add a photo or a description first.'; return; }
-  $('estimate').disabled = true; $('estimateResult').textContent = 'Asking Claude…';
+  $('estimate').disabled = true; $('estimateResult').textContent = 'Estimating…';
   try {
     const r = await fetch('/meals/estimate', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ photo: photoData, mediaType: 'image/jpeg', text: text || null }) });
     const est = await r.json();
@@ -686,7 +686,7 @@ async function load() {
     renderInsulin(await (await fetch('/events?hours=24')).json());
     draw(g.history, g.forecast, g.events || []);
     $('estimate').disabled = !g.aiAvailable;
-    $('estimate').title = g.aiAvailable ? '' : 'Claude is unavailable on the Mac';
+    $('estimate').title = g.aiAvailable ? '' : "AI isn't set up on the server: see AI providers in the README.";
     const st = await (await fetch(`/stats?low=${LOW}&high=${HIGH}`)).json();
     statBlock('today', st.today); statBlock('week', st.week);
     meals = await (await fetch(`/meals?days=30&low=${LOW}&high=${HIGH}`)).json();

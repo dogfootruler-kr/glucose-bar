@@ -4,13 +4,222 @@ Uses the Claude Agent SDK, which runs Claude Code under the hood and therefore u
 Claude subscription you're logged into with `claude` (no API key). Tools are disabled:
 these are single question-and-answer calls.
 """
+"""AI calls: carb estimate from a meal photo, dose adjusted for how similar meals went, and the weekly summary.
+
+The provider is set under "ai" in ~/.config/freestyle-bar/config.json:
+
+  {"ai": {"provider": "claude"}}    Claude Agent SDK on the subscription you're logged into with `claude`
+                                    (no API key); the default when claude-agent-sdk is installed
+  {"ai": {"provider": "gemini", "apiKey": "..."}}
+                                    Google Gemini API (key from aistudio.google.com, or GEMINI_API_KEY);
+                                    model defaults to gemini-flash-latest, then gemini-3.6-flash and
+                                    gemini-flash-lite-latest while the newer ones are overloaded
+  {"ai": {"provider": "openai", "baseUrl": "...", "model": "...", "apiKey": "..."}}
+                                    any OpenAI-compatible chat API: Groq, Ollama, OpenRouter, Workers AI, OpenAI
+                                    (key optional for a local Ollama; OPENAI_API_KEY also works)
+  {"ai": {"provider": "none"}}      AI features off
+
+Optional for every provider: "model" (or a list of models, tried in order while the API is busy), and "timeout" in seconds (default 180; raise it for a slow local model).
+Gemini and OpenAI-compatible providers are called with urllib, so they need no extra packages.
+"""
 import asyncio
 import json
 import os
+import time
+import urllib.error
+import urllib.request
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
+# Gemini tries the next model when one stays overloaded (503s are common on the free tier).
+MODELS = {"claude": "claude-sonnet-5-5", "gemini": ["gemini-flash-latest", "gemini-3.6-flash", "gemini-flash-lite-latest"]}
+NAMES = {"claude": "Claude", "gemini": "Gemini"}
 
-MODEL = "claude-sonnet-5-5"
+try:
+    import claude_agent_sdk
+except ImportError:
+    claude_agent_sdk = None
+
+settings = {"provider": "claude" if claude_agent_sdk else "none"}
+
+
+def configure(cfg):
+    """Picks the provider from the "ai" section of config.json (see the module docstring)."""
+    global settings
+    s = dict(cfg or {})
+    s.setdefault("provider", "claude" if claude_agent_sdk else "none")
+    s["provider"] = s["provider"].lower()
+    if s["provider"] not in ("claude", "gemini", "openai", "none"):
+        raise ValueError(f'unknown "ai" provider {s["provider"]!r} (claude, gemini, openai or none)')
+    if s["provider"] == "openai" and not s.get("model"):
+        raise ValueError('"ai" provider openai needs a "model"')
+    settings = s
+
+
+def _key():
+    env = {"gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY"}.get(settings["provider"])
+    return settings.get("apiKey") or (os.environ.get(env) if env else None)
+
+
+def available():
+    p = settings["provider"]
+    if p == "claude":
+        return claude_agent_sdk is not None
+    if p == "gemini":
+        return bool(_key())
+    return p == "openai"
+
+
+def unavailable_reason():
+    p = settings["provider"]
+    if p == "claude":
+        return "Install claude-agent-sdk on the server to use Claude, or set another provider under \"ai\" in config.json."
+    if p == "gemini":
+        return 'Add a Gemini API key ("apiKey" under "ai" in config.json, or GEMINI_API_KEY).'
+    return 'AI is off: set a provider under "ai" in config.json.'
+
+
+def describe():
+    """For the log: which provider and model the AI features use."""
+    p = settings["provider"]
+    if p == "none":
+        return "off"
+    return f"{p} ({', '.join(_models())})" + ("" if available() else ", not available: " + unavailable_reason())
+
+
+def _parse_json(text):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+    return json.loads(text)
+
+
+def _models():
+    m = settings.get("model") or MODELS.get(settings["provider"])
+    return [m] if isinstance(m, str) else list(m)
+
+
+class Busy(RuntimeError):
+    """The API kept answering 429 or 5xx."""
+
+
+def _post(url, body, headers):
+    """POSTs JSON, retrying a few times when the API is busy (429 or 5xx, common on free tiers)."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"content-type": "application/json", **headers})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=float(settings.get("timeout", 180))) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            busy = e.code == 429 or e.code >= 500
+            if busy and attempt < 2:
+                time.sleep(2 * 3 ** attempt)  # 2, 6 s
+                continue
+            detail = e.read().decode(errors="replace")
+            try:
+                detail = json.loads(detail)["error"]["message"]
+            except (ValueError, KeyError, TypeError):
+                detail = detail[:300]
+            raise (Busy if busy else RuntimeError)(
+                f"{NAMES.get(settings['provider'], 'AI')} request failed ({e.code}): {detail}") from None
+
+
+def _each_model(call):
+    """call(model) for each configured model in turn, moving on only while the API is busy."""
+    models = _models()
+    for i, model in enumerate(models):
+        try:
+            return call(model)
+        except Busy:
+            if i == len(models) - 1:
+                raise
+
+
+def complete(system, content, schema=None, effort="medium"):
+    """One question and answer. content is a list of {"type": "text", "text"} and
+    {"type": "image", "data": base64, "mediaType"} parts. Returns the parsed JSON when schema is
+    given, the text otherwise."""
+    p = settings["provider"]
+    if not available():
+        raise RuntimeError(unavailable_reason())
+    return {"claude": _claude, "gemini": _gemini, "openai": _openai}[p](system, content, schema, effort)
+
+
+# --- Claude (Agent SDK, subscription login) ------------------------------------
+
+def _claude(system, content, schema, effort):
+    sdk = claude_agent_sdk
+    options = sdk.ClaudeAgentOptions(
+        model=_models()[0],
+        system_prompt=system,
+        tools=[],                 # no file, shell or web access
+        setting_sources=[],       # ignore user/project CLAUDE.md and settings
+        max_turns=2,
+        effort=effort,
+        output_format={"type": "json_schema", "schema": schema} if schema else None,
+        cwd=os.path.expanduser("~/Library/Application Support/freestyle-bar"),
+        env={"ANTHROPIC_API_KEY": ""},  # never fall back to an API key; use the subscription login
+    )
+    parts = [{"type": "image", "source": {"type": "base64", "media_type": c["mediaType"], "data": c["data"]}}
+             if c["type"] == "image" else c for c in content]
+
+    async def ask():
+        async def messages():
+            yield {"type": "user", "message": {"role": "user", "content": parts}}
+
+        text, result = [], None
+        async for msg in sdk.query(prompt=messages(), options=options):
+            if isinstance(msg, sdk.AssistantMessage):
+                text += [b.text for b in msg.content if isinstance(b, sdk.TextBlock)]
+            elif isinstance(msg, sdk.ResultMessage):
+                result = msg
+        if result is None or result.is_error:
+            detail = (result.errors or [result.result]) if result else ["no result"]
+            raise RuntimeError(f"Claude request failed: {detail}")
+        return result, "".join(text).strip()
+
+    # The HTTP server is threaded, so each call gets its own event loop.
+    result, text = asyncio.run(ask())
+    if schema:
+        return result.structured_output if result.structured_output is not None else _parse_json(text)
+    return text or (result.result or "").strip()
+
+
+# --- Gemini API ----------------------------------------------------------------
+
+def _gemini(system, content, schema, effort):
+    parts = [{"inlineData": {"mimeType": c["mediaType"], "data": c["data"]}} if c["type"] == "image"
+             else {"text": c["text"]} for c in content]
+    config = {"responseMimeType": "application/json", "responseJsonSchema": schema} if schema else {}
+    body = {"systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": parts}], "generationConfig": config}
+    r = _each_model(lambda model: _post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", body, {"x-goog-api-key": _key()}))
+    cand = (r.get("candidates") or [{}])[0]
+    text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", []) if not p.get("thought"))
+    if not text:
+        reason = cand.get("finishReason") or r.get("promptFeedback", {}).get("blockReason") or "empty reply"
+        raise RuntimeError(f"Gemini returned no answer ({reason})")
+    return _parse_json(text) if schema else text.strip()
+
+
+# --- OpenAI-compatible chat APIs (Groq, Ollama, OpenRouter, Workers AI, OpenAI) --
+
+def _openai(system, content, schema, effort):
+    base = (settings.get("baseUrl") or "https://api.openai.com/v1").rstrip("/")
+    parts = [{"type": "image_url", "image_url": {"url": f"data:{c['mediaType']};base64,{c['data']}"}}
+             if c["type"] == "image" else c for c in content]
+    body = {"messages": [{"role": "system", "content": system}, {"role": "user", "content": parts}]}
+    if schema:
+        body["response_format"] = {"type": "json_schema",
+                                   "json_schema": {"name": "answer", "schema": schema, "strict": True}}
+    key = _key()
+    r = _each_model(lambda model: _post(base + "/chat/completions", {"model": model, **body},
+                                        {"authorization": f"Bearer {key}"} if key else {}))
+    text = (r.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    if not text:
+        raise RuntimeError("AI returned no answer")
+    return _parse_json(text) if schema else text.strip()
+
 
 MEAL_SCHEMA = {
     "type": "object",
@@ -34,46 +243,6 @@ MEAL_SCHEMA = {
 }
 
 
-def _options(system_prompt, effort, output_format=None):
-    env = {"ANTHROPIC_API_KEY": ""}  # never fall back to an API key; use the subscription login
-    return ClaudeAgentOptions(
-        model=MODEL,
-        system_prompt=system_prompt,
-        tools=[],                 # no file, shell or web access
-        setting_sources=[],       # ignore user/project CLAUDE.md and settings
-        max_turns=2,
-        effort=effort,
-        output_format=output_format,
-        cwd=os.path.expanduser("~/Library/Application Support/freestyle-bar"),
-        env=env,
-    )
-
-
-async def _ask(content, options):
-    async def messages():
-        yield {"type": "user", "message": {"role": "user", "content": content}}
-
-    text, result = [], None
-    async for msg in query(prompt=messages(), options=options):
-        if isinstance(msg, AssistantMessage):
-            text += [b.text for b in msg.content if isinstance(b, TextBlock)]
-        elif isinstance(msg, ResultMessage):
-            result = msg
-    if result is None or result.is_error:
-        detail = (result.errors or [result.result]) if result else ["no result"]
-        raise RuntimeError(f"Claude request failed: {detail}")
-    return result, "".join(text).strip()
-
-
-def _run(coro):
-    # The HTTP server is threaded, so each call gets its own event loop.
-    return asyncio.run(coro)
-
-
-def available():
-    return True
-
-
 MEAL_PROMPT = """Estimate the carbohydrates in this meal for someone with diabetes who logs meals to understand their glucose response.
 
 List the main items you can identify with an estimated carb amount in grams for the portion shown, and the total.
@@ -86,14 +255,9 @@ Use "note" for one short caveat when useful (e.g. "Sauce may add 10-15 g"), othe
 def estimate_meal(photo_b64=None, media_type="image/jpeg", text=None):
     content = []
     if photo_b64:
-        content.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": photo_b64}})
+        content.append({"type": "image", "mediaType": media_type, "data": photo_b64})
     content.append({"type": "text", "text": MEAL_PROMPT + (f"\n\nThe person's description: {text}" if text else "")})
-    options = _options("You estimate meal carbohydrates from photos and descriptions.", "medium",
-                       {"type": "json_schema", "schema": MEAL_SCHEMA})
-    result, text_out = _run(_ask(content, options))
-    if result.structured_output is not None:
-        return result.structured_output
-    return json.loads(text_out)
+    return complete("You estimate meal carbohydrates from photos and descriptions.", content, MEAL_SCHEMA)
 
 
 DOSE_SCHEMA = {
@@ -130,8 +294,7 @@ none = no insulin logged) with its reason, and the glucose peak.
 def adjust_dose(meal, suggestion, past):
     content = [{"type": "text", "text": "Meal now:\n" + json.dumps(meal) + "\n\nFormula suggestion:\n"
                 + json.dumps(suggestion) + "\n\nPast meals (local times):\n" + json.dumps(past, indent=0)}]
-    result, text = _run(_ask(content, _options(DOSE_SYSTEM, "medium", {"type": "json_schema", "schema": DOSE_SCHEMA})))
-    return result.structured_output if result.structured_output is not None else json.loads(text)
+    return complete(DOSE_SYSTEM, content, DOSE_SCHEMA)
 
 
 SUMMARY_SYSTEM = """You write a short weekly glucose recap for one person with diabetes, from their CGM data.
@@ -158,5 +321,4 @@ If data is sparse, say so briefly rather than inventing patterns. Reply with the
 
 def weekly_summary(digest):
     content = [{"type": "text", "text": "This week's data (glucose in mg/dL, local times):\n\n" + json.dumps(digest, indent=1)}]
-    result, text = _run(_ask(content, _options(SUMMARY_SYSTEM, "high")))
-    return text or (result.result or "").strip()
+    return complete(SUMMARY_SYSTEM, content, effort="high")

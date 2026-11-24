@@ -350,7 +350,7 @@ private fun EntryDetail(data: Data, settings: Settings, entry: GlucoseEvent) {
         ResponseChart(data, settings, entry)
         meal?.let { MealFacts(it, settings) }
         entry.estimate?.let { estimate ->
-            Facts("Claude's estimate") {
+            Facts("AI estimate") {
                 estimate.items.forEach { Fact(it.name, "${it.carbs.toInt()} g") }
                 estimate.note?.let { Caption(it) }
             }

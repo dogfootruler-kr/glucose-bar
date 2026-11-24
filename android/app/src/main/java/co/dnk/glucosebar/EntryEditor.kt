@@ -182,7 +182,7 @@ fun EntryEditor(nav: Nav, id: Int?) {
             suggestionError = e.message
             return@LaunchedEffect
         }
-        // Then Claude's adjustment for how the same food went before, which needs something to match on.
+        // Then the AI's adjustment for how the same food went before, which needs something to match on.
         val text = note.trim()
         if (text.isEmpty() && estimate == null) return@LaunchedEffect
         checkingHistory = true
@@ -500,7 +500,7 @@ private fun EstimateSection(aiAvailable: Boolean, estimating: Boolean, estimate:
             if (estimating) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Icon(Icons.Filled.AutoAwesome, null, Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
-            Text("Estimate carbs with Claude")
+            Text("Estimate carbs")
         }
         estimate?.let { e ->
             e.items.forEach { item ->
@@ -509,7 +509,7 @@ private fun EstimateSection(aiAvailable: Boolean, estimating: Boolean, estimate:
             Row { Text("Confidence", Modifier.weight(1f)); Text(e.confidence.capitalizedFirst()) }
         }
         Caption(when {
-            !aiAvailable -> "Claude is unavailable. Run `claude` once on the server Mac to log in."
+            !aiAvailable -> "AI isn't set up on the server: see AI providers in the README."
             estimate?.note != null -> estimate.note
             else -> "Uses the photo and description."
         })
@@ -568,7 +568,7 @@ private fun DoseSuggestionView(s: DoseSuggestion, carbs: Double, settings: Setti
                 }
                 s.exercise?.let { Step(it.label, -it.units) }
                 s.history?.takeIf { it.units != 0.0 }?.let {
-                    Step("How ${it.meals} similar ${if (it.meals == 1) "meal" else "meals"} went, according to Claude", it.units)
+                    Step("How ${it.meals} similar ${if (it.meals == 1) "meal" else "meals"} went before", it.units)
                 }
                 HorizontalDivider()
                 Row {
