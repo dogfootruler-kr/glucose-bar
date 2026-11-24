@@ -78,6 +78,27 @@ install_dev() {
   install_app "$root/app/.build/GlucoseBar.app"
 }
 
+# caffeinate -s keeps the Mac from idle-sleeping while it's on AC power, so the server stays
+# reachable with the display off (closing the lid still sleeps it, unless in clamshell mode).
+write_server_plist() {
+  mkdir -p "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
+  cat > "$PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/caffeinate</string><string>-s</string>
+    <string>$VENV/bin/python</string><string>$CODE/server/libre_server.py</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/freestyle-bar.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/freestyle-bar.log</string>
+</dict></plist>
+PL
+}
+
 setup_server() {
   # Credentials (password goes to the Keychain, never to disk)
   mkdir -p "$CFG_DIR"
@@ -91,21 +112,7 @@ setup_server() {
   # Python venv with the Claude Agent SDK, which uses your `claude` login
   [ -x "$VENV/bin/python" ] || python3 -m venv "$VENV"
   "$VENV/bin/pip" install -q --disable-pip-version-check claude-agent-sdk
-  mkdir -p "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
-  cat > "$PLIST" <<PL
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key><array>
-    <string>$VENV/bin/python</string><string>$CODE/server/libre_server.py</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$HOME/Library/Logs/freestyle-bar.log</string>
-  <key>StandardErrorPath</key><string>$HOME/Library/Logs/freestyle-bar.log</string>
-</dict></plist>
-PL
+  write_server_plist
   load "$LABEL" "$PLIST"
 }
 
@@ -147,7 +154,8 @@ if [ "$MODE" = "update" ]; then
   [ -n "$tag" ] && [ "$tag" != "$current" ] || exit 0
   echo "$(date '+%F %T') $current -> $tag"
   install_release "$tag"
-  [ "$SERVER" = 1 ] && restart_server
+  # Rewrite the server agent too, so older installs pick up changes to it.
+  if [ "$SERVER" = 1 ]; then write_server_plist; load "$LABEL" "$PLIST"; fi
   exit 0
 fi
 

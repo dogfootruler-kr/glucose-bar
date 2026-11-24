@@ -3,6 +3,10 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
+## v1.3.1 — 2026-11-26
+- The server Mac no longer idle-sleeps while it's plugged in, so the server stays reachable after the display turns off (closing the lid still sleeps it, unless an external display is connected). Existing installs pick this up with this update
+- Meal photos that are missing from disk (e.g. left on a previous Mac) are no longer offered to the apps and web page, and asking for one returns "not found" instead of an error
+
 ## v1.3.0 — 2026-11-24
 - The server can use the Gemini API or any OpenAI-compatible API (Groq, a local Ollama model, OpenRouter, …) instead of Claude for photo carb estimates, the dose adjustment from past meals and weekly summaries, so it can run on a free cloud VM without a Claude subscription. Set it under `"ai"` in `config.json` (see AI providers in the README); Claude stays the default
 - Gemini moves on from Gemini 3.8 Flash to 3.6 Flash and then 3.5 Flash-Lite while a model is overloaded or out of free quota, and busy answers are retried

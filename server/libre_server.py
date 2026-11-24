@@ -122,7 +122,8 @@ def event_json(r):
         "id": r["id"], "ts": r["ts"], "timestamp": iso(r["ts"]), "kind": r["kind"],
         "carbs": r["carbs"], "units": r["units"], "insulinType": r["insulin_type"], "note": r["note"],
         "activity": r["activity"], "minutes": r["minutes"], "intensity": r["intensity"],
-        "photo": f"/photos/{r['id']}" if r["photo"] else None,
+        # Photos left behind on another computer aren't offered (the row still names them).
+        "photo": f"/photos/{r['id']}" if r["photo"] and os.path.exists(os.path.join(PHOTO_DIR, r["photo"])) else None,
         "estimate": json.loads(r["estimate"]) if r["estimate"] else None,
     }
 
@@ -641,8 +642,12 @@ class Handler(BaseHTTPRequestHandler):
             if not row or not row["photo"]:
                 return self.send_error(404)
             ext = row["photo"].rsplit(".", 1)[-1]
-            with open(os.path.join(PHOTO_DIR, row["photo"]), "rb") as f:
-                self._send(f.read(), {"jpg": "image/jpeg"}.get(ext, f"image/{ext}"))
+            try:
+                with open(os.path.join(PHOTO_DIR, row["photo"]), "rb") as f:
+                    data = f.read()
+            except FileNotFoundError:
+                return self.send_error(404)
+            self._send(data, {"jpg": "image/jpeg"}.get(ext, f"image/{ext}"))
         elif path == "/meals":
             since = int(time.time() - float(q.get("days", 30)) * 86400)
             self._json(meals_with_impact(since, int(q.get("high", 180)), int(q.get("low", 70))))
