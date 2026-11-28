@@ -3,6 +3,16 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
+## v1.4.0 — 2026-11-28
+- Safer dose suggestions: never more than a quarter of your usual daily dose or 15 u (marked "capped"); no insulin when you're below range or the forecast says you'll be low within 30 minutes; a rising trend no longer adds insulin on top of a meal still digesting or insulin still working; and the adjustment from past meals only moves the carb part, by at most 2 u up. All limits can be changed under `"dosing"` in `config.json` (see Dose safety limits in the README)
+- The apps, web page and Windows tray show dose warnings more clearly, most serious first: heading low and below range in red, a capped dose and a missed long-acting dose in orange
+- Long-acting checks (`GET /basal`): a warning on the dose suggestion when no long-acting has been logged for 26 hours, how glucose drifts while fasting, and long-acting's share of the daily dose. They only inform and don't change doses
+- A low now has to last 15 minutes to count, so a single dip (such as lying on the sensor) no longer cuts learning short or marks a dose "too much"
+- More accurate learning: corrections are only learned from with nothing else active, including ones after which glucose rose; the daily dose is the median of fully logged days; carb ratios stay within half and twice the rule of thumb and change gradually around 04:00, 11:00 and 16:00
+- New settings in `config.json`: `"timezone"` for a server in another time zone than you (such as a cloud VM), `"insulin"` for Fiasp or Lyumjev, and `"targets"` for the web page's range and dose target
+- Meals can be logged as slow (high fat or protein) on the web page, so their carbs count as absorbing over 5 hours
+- Tests run on every push and pull request, and before each release
+
 ## v1.3.1 — 2026-11-26
 - The server Mac no longer idle-sleeps while it's plugged in, so the server stays reachable after the display turns off (closing the lid still sleeps it, unless an external display is connected). Existing installs pick this up with this update
 - Meal photos that are missing from disk (e.g. left on a previous Mac) are no longer offered to the apps and web page, and asking for one returns "not found" instead of an error
