@@ -88,12 +88,32 @@ The dose suggestion follows these rules, with a warning in the app whenever one 
 - No suggestion is ever more than `maxDoseFraction` of the average total daily dose, or more than `maxDoseUnits`.
 - The adjustment from past meals moves only the carb part of the dose: by at most half of it either way, and never more than `aiMaxIncrease` units up. The server log records each one.
 - Requests are refused for more than `maxCarbs` grams, a target outside 70–200 mg/dL or a low outside 50–200 mg/dL.
+- A low counts only once glucose has stayed below the low threshold for `lowMinMinutes` (two readings 15 minutes apart are enough). A single low reading, such as lying on the sensor gives (a compression low), isn't one. This applies when learning the ratios, judging past doses and learning from exercise.
+- The learned carb ratios stay between half and twice the 500/daily-dose rule, as the sensitivity already did.
+- The suggestion warns when no long-acting insulin has been logged for longer than usual (see below).
 
 Change them under `"dosing"` in `config.json`, then restart the server. These are the defaults:
 
 ```json
-"dosing": {"maxDoseFraction": 0.25, "maxDoseUnits": 15, "lowLookahead": 30, "trendRecentMinutes": 120, "aiMaxIncrease": 2, "maxCarbs": 300}
+"dosing": {"maxDoseFraction": 0.25, "maxDoseUnits": 15, "lowLookahead": 30, "trendRecentMinutes": 120, "aiMaxIncrease": 2, "maxCarbs": 300, "lowMinMinutes": 15}
 ```
+
+## Long-acting insulin checks
+`GET /basal` checks the long-acting (basal) insulin from what's been logged. It only informs: no dose changes beyond the warning on the suggestion.
+- **Missed dose**: the last long-acting dose and how long ago it was. After `longMissedHours` with none logged, the dose suggestion carries a warning (only once long-acting has been logged before).
+- **Fasting drift**: how fast glucose rises or falls, in mg/dL per hour, during stretches of at least `fastingMinHours` with no logged carbs and no low for `fastingCarbHours` before, less than `fastingMaxIob` units of rapid insulin active, and no exercise for `exerciseClearHours`. Stretches are cut at midnight, and each day over the last `driftDays` gets one number. It's flagged when it's beyond ±`driftLimit` on at least `driftMinDays` days and on more than half of the days measured. Overnight rises also come from the dawn effect, and unlogged snacks look like a rise.
+- **Share of the daily dose**: long-acting as a share of all insulin, over past days with both kinds logged (at least `shareMinDays`), flagged outside `shareMin`–`shareMax`.
+
+The defaults, changed under `"basal"` in `config.json`:
+
+```json
+"basal": {"longMissedHours": 26, "fastingCarbHours": 4, "fastingMaxIob": 0.3, "fastingMinHours": 3, "exerciseClearHours": 6, "driftLimit": 15, "driftDays": 14, "driftMinDays": 3, "shareMin": 0.3, "shareMax": 0.6, "shareMinDays": 3}
+```
+
+## Time zone and web page targets
+The carb ratios by time of day, daily doses, today's stats, weekly summaries and times in messages use the server's own time zone. A server somewhere else than you, such as a cloud VM in UTC, should be given yours as an IANA name: `"timezone": "Asia/Seoul"` in `config.json` (on Windows this needs `pip install tzdata`). The server refuses to start with a name it doesn't know.
+
+The apps keep their own target range and dose target in their settings. The web page has no settings, so it uses `"targets"` from `config.json` (shown at `GET /settings`). These are the defaults: `"targets": {"low": 70, "high": 180, "doseTarget": 120}`.
 
 ## Other computers (Tailscale)
 One computer runs the server; others read from it over [Tailscale](https://tailscale.com), so nothing is exposed to the internet or the local network and there's one shared history and meal log.
@@ -121,6 +141,8 @@ If the short name doesn't resolve, use the full MagicDNS name (`glucose-work.<ta
 | `/exercise?days=30` | exercise with how glucose responded, during and in the 12 h after |
 | `/dose?carbs=50&target=120` | rapid-insulin suggestion and the learned ratios |
 | `POST /dose/history` | the same, adjusted by Claude for how similar past meals went |
+| `/basal?low=70` | long-acting checks: last dose, fasting drift, share of the daily dose |
+| `/settings` | the target range and dose target the web page uses, and the time zone |
 | `/readings?start=&end=` | readings between two Unix times |
 | `/meals/estimate` | POST photo/text, returns a carb estimate |
 | `/summary`, `/summary/generate` | weekly summary |

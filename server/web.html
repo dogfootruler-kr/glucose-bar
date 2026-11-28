@@ -174,7 +174,8 @@
   </div>
 </main>
 <script>
-const LOW = 70, HIGH = 180;
+// From config.json "targets" on the server (GET /settings); these until it answers.
+let LOW = 70, HIGH = 180, DOSE_TARGET = 120;
 const JSON_HEADERS = { 'content-type': 'application/json' };  // the server only accepts JSON POSTs
 let hours = 6, mealSort = 'recent', meals = [], entries = [], exercise = [], aiAvailable = false;
 let plotted = [], plottedEvents = [], scaleX = null, scaleY = null;
@@ -578,7 +579,7 @@ function updateDose() {
   doseTimer = setTimeout(async () => {
     let s;
     try {
-      const r = await fetch(`/dose?carbs=${carbs}&target=120&low=${LOW}`);
+      const r = await fetch(`/dose?carbs=${carbs}&target=${DOSE_TARGET}&low=${LOW}`);
       s = await r.json();
       if (!r.ok) throw new Error(s.error);
     } catch (e) { $('doseBox').innerHTML = `<span class="muted small">${esc(e.message)}</span>`; $('doseBox').style.display = ''; return; }
@@ -589,7 +590,7 @@ function updateDose() {
     render(s, 'Checking how similar meals went…');
     try {
       const r = await fetch('/dose/history', { method: 'POST', headers: JSON_HEADERS,
-        body: JSON.stringify({ carbs, note: note || null, description, target: 120, low: LOW, high: HIGH }) });
+        body: JSON.stringify({ carbs, note: note || null, description, target: DOSE_TARGET, low: LOW, high: HIGH }) });
       const h = await r.json();
       if (!r.ok) throw new Error(h.error);
       if (seq === doseSeq) render(h);
@@ -699,7 +700,13 @@ async function load() {
     document.title = 'Glucose';
   }
 }
-load();
+async function loadSettings() {
+  try {
+    const t = (await (await fetch('/settings')).json()).targets;
+    if (t) ({ low: LOW, high: HIGH, doseTarget: DOSE_TARGET } = t);
+  } catch (e) { /* older server: keep the defaults */ }
+}
+loadSettings().then(load);
 loadSummary();
 setInterval(load, 60000);
 </script>

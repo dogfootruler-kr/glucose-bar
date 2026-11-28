@@ -13,7 +13,8 @@ This is an estimate from self-logged data, not medical advice.
 """
 import bisect
 import math
-from datetime import datetime
+
+import localtime
 
 CARB_MINUTES = 180
 INSULIN_DIA = 360
@@ -28,7 +29,9 @@ LIMITS = {
     "trendRecentMinutes": 120,  # no upward trend added within this long of a rapid dose
     "aiMaxIncrease": 2.0,     # most units the AI's food history can add to the formula's dose
     "maxCarbs": 300,          # grams one suggestion can be asked for
+    "lowMinMinutes": 15,      # how long glucose has to stay below low for it to count as a low
 }
+LOW_GAP = 20 * 60             # readings further apart than this don't make one low
 
 
 def configure(cfg):
@@ -137,10 +140,10 @@ def daily_insulin(events):
     Days with long-acting logged are preferred, since a day without it is probably incomplete.
     """
     days, with_long = {}, set()
-    today = datetime.now().date()
+    today = localtime.now().date()
     for e in events:
         if e["kind"] == "insulin" and e.get("units"):
-            day = datetime.fromtimestamp(e["ts"]).date()
+            day = localtime.at(e["ts"]).date()
             days[day] = days.get(day, 0) + e["units"]
             if e.get("insulinType") == "long":
                 with_long.add(day)
@@ -178,6 +181,34 @@ def meal_groups(meals):
     return groups
 
 
+def low_runs(readings, low):
+    """Lows in readings ([(ts, mgdl)] sorted): runs below `low` lasting at least LIMITS["lowMinMinutes"].
+
+    A single reading below low, as a sensor pressed on during sleep gives (a compression low), isn't one.
+    Each is {"start", "end", "mgdl" (lowest), "ts" (when it was lowest)}.
+    """
+    runs, cur = [], None
+    for ts, v in readings:
+        if v < low and cur and ts - cur["end"] <= LOW_GAP:
+            cur["end"] = ts
+            if v < cur["mgdl"]:
+                cur["mgdl"], cur["ts"] = v, ts
+        elif v < low:
+            cur = {"start": ts, "end": ts, "mgdl": v, "ts": ts}
+            runs.append(cur)
+        else:
+            cur = None
+    return [r for r in runs if r["end"] - r["start"] >= LIMITS["lowMinMinutes"] * 60]
+
+
+def first_low(readings, low, t0, t1, index=None):
+    """The first low (see low_runs) starting between t0 and t1, or None. index: the readings' timestamps,
+    to look only at the readings near the window; a low running on past t1 is still seen whole."""
+    if index is not None:
+        readings = readings[_lo(index, t0):_lo(index, t1 + LIMITS["lowMinMinutes"] * 60 + LOW_GAP)]
+    return next((r for r in low_runs(readings, low) if t0 <= r["start"] < t1), None)
+
+
 def _corrections(readings, index, rapid, meals, low, fx=NO_EXERCISE):
     """mg/dL drop per unit for doses taken with no meal 2 h before to 3 h after.
 
@@ -191,8 +222,8 @@ def _corrections(readings, index, rapid, meals, low, fx=NO_EXERCISE):
         if any(o is not e and abs(o["ts"] - t) <= 3 * 3600 for o in rapid):
             continue
         g0, g1 = _reading_at(readings, index, t), _reading_at(readings, index, t + 3 * 3600)
-        inside = [v for _, v in readings[_lo(index, t):_lo(index, t + 3 * 3600)]]
-        if g0 is None or g1 is None or not inside or min(inside) < low:
+        inside = readings[_lo(index, t):_lo(index, t + 3 * 3600)]
+        if g0 is None or g1 is None or not inside or first_low(readings, low, t, t + 3 * 3600, index):
             continue
         exercised = fx.lowered(t, t + 3 * 3600)
         if exercised > 25 and exercised > 0.5 * max(g0 - g1, 1):
@@ -219,7 +250,8 @@ def _meal_ratios(readings, index, rapid, meals, isf, low, fx=NO_EXERCISE):
         end = start + 4 * 3600
         if gi + 1 < len(groups):
             end = min(end, groups[gi + 1][0]["ts"])
-        lo = next((ts for ts, v in readings[_lo(index, start):_lo(index, end)] if v < low), None)
+        lo = first_low(readings, low, start, end, index)
+        lo = lo and lo["start"]
         if lo:
             end = lo
         if end - start < 2 * 3600 and not lo:
@@ -243,7 +275,7 @@ BUCKETS = (("morning", 4, 11), ("midday", 11, 16), ("evening", 16, 28))
 
 
 def bucket(ts):
-    h = datetime.fromtimestamp(ts).hour
+    h = localtime.at(ts).hour
     h = h + 24 if h < 4 else h
     return next(name for name, a, b in BUCKETS if a <= h < b)
 
@@ -264,11 +296,13 @@ def fit(readings, events, low=70, fx=NO_EXERCISE):
     corrections = _corrections(readings, index, rapid, meals, low, fx)
     isf = max(isf0 / 2, min(isf0 * 2, _shrink(corrections, isf0, 3)))
     ratios = _meal_ratios(readings, index, rapid, meals, isf, low, fx)
-    icr = _shrink([r["ratio"] for r in ratios], icr0, 3)
+    # Like the sensitivity, the carb ratios stay within half and twice the rule of thumb.
+    icr = max(icr0 / 2, min(icr0 * 2, _shrink([r["ratio"] for r in ratios], icr0, 3)))
     by_time = {}
     for name, _, _ in BUCKETS:
         values = [r["ratio"] for r in ratios if bucket(r["ts"]) == name]
-        by_time[name] = {"carbRatio": round(_shrink(values, icr, 2), 1), "meals": len(values)}
+        ratio = max(icr0 / 2, min(icr0 * 2, _shrink(values, icr, 2)))
+        by_time[name] = {"carbRatio": round(ratio, 1), "meals": len(values)}
     return {
         "carbRatio": round(icr, 1),
         "sensitivity": round(isf),
@@ -322,20 +356,20 @@ def suggest(params, carbs, glucose, slope, events, now, target=120, low=70, exer
     warnings = []
     cap = max_units(params)
     if glucose is not None and glucose < low:
-        warnings.append("You're below range: treat the low first, then dose for the meal once you're back up.")
+        warnings.append(("belowLow", "You're below range: treat the low first, then dose for the meal once you're back up."))
         total = 0.0
     elif predicted is not None and predicted < low:
-        warnings.append(f"You're heading low (about {round(predicted)} in {LIMITS['lowLookahead']:g} min): "
-                        "don't take insulin now. Eat first and check again in 15 to 20 minutes before dosing.")
+        warnings.append(("headingLow", f"You're heading low (about {round(predicted)} in {LIMITS['lowLookahead']:g} min): "
+                        "don't take insulin now. Eat first and check again in 15 to 20 minutes before dosing."))
         correction = trend = 0.0
         total = 0.0
     elif glucose is None:
-        warnings.append("No recent glucose reading, so there's no correction in this estimate.")
+        warnings.append(("noGlucose", "No recent glucose reading, so there's no correction in this estimate."))
     total = max(0.0, math.floor(total * 2) / 2)
     capped = total > cap
     if capped:
-        warnings.append(f"Capped at {_fmt(cap)} u, the most one dose is suggested for (worked out {_fmt(total)} u). "
-                        "Check the carbs and take any more only if you're sure.")
+        warnings.append(("capped", f"Capped at {_fmt(cap)} u, the most one dose is suggested for (worked out {_fmt(total)} u). "
+                        "Check the carbs and take any more only if you're sure."))
         total = cap
     return {
         "units": total,
@@ -351,7 +385,10 @@ def suggest(params, carbs, glucose, slope, events, now, target=120, low=70, exer
         "target": target,
         "maxUnits": cap,
         "capped": capped,
-        "warning": " ".join(warnings) or None,
+        "warning": " ".join(text for _, text in warnings) or None,
+        # The same warnings with what each is about, for apps to show them apart:
+        # belowLow, headingLow, noGlucose, capped (and missedLong from the server).
+        "alerts": [{"kind": kind, "text": text} for kind, text in warnings],
         "period": period,
         "periodCarbRatio": icr,
         "exercise": ex,
@@ -409,10 +446,11 @@ def meal_dose(meal_ts, meals, insulin, readings, low, high, now, params=None, fx
     after = fx.adjust(raw, start)
     labels = fx.describe(start - 3600, horizon)
     exercise = labels[0] if len(labels) == 1 else "exercise"
-    dip = next(((ts, v) for ts, v in raw if v < low and ts >= start + 30 * 60), None)
+    # Only a low that lasts counts, not a single reading (a compression low, say).
+    dip = first_low(readings, low, start + 30 * 60, horizon + 1)
     if dip:
-        went = f"Went down to {dip[1]} at {datetime.fromtimestamp(dip[0]):%H:%M}"
-        if any(v < low for ts, v in after if ts >= start + 30 * 60):
+        went = f"Went down to {dip['mgdl']} at {localtime.at(dip['ts']):%H:%M}"
+        if first_low(fx.adjust(readings, start), low, start + 30 * 60, horizon + 1):
             out["verdict"] = "tooMuch"
             out["reason"] = went + (f", even allowing for the {exercise}" if after != raw else "")
         else:

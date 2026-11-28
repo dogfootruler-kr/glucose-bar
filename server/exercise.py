@@ -12,9 +12,9 @@ This is an estimate from self-logged data, not medical advice.
 """
 import bisect
 import math
-from datetime import datetime
 
 import dosing
+import localtime
 
 ACTIVITIES = ("walk", "run", "cycling", "strength", "swim", "sport", "other")
 INTENSITIES = ("light", "moderate", "hard")
@@ -178,7 +178,8 @@ def learn(readings, events, params, low=70):
             continue
         if any(o is not e and o["ts"] < t1 and ends_at(o) + TAIL * 60 > t0 for o in exercises):
             continue
-        t1 = next((ts for ts, v in readings[dosing._lo(index, t0):dosing._lo(index, t1)] if v < low), t1)
+        lo = dosing.first_low(readings, low, t0, t1, index)
+        t1 = lo["start"] if lo else t1
         g0, g1 = dosing._reading_at(readings, index, t0), dosing._reading_at(readings, index, t1)
         shape = _shape(e, t1)
         if g0 is None or g1 is None or shape < 10:
@@ -226,7 +227,7 @@ def _timing(e, now):
 def when(e, now):
     """e.g. "in progress", "planned for 18:00", "ended 20 min ago"."""
     if e["ts"] > now:
-        return f"planned for {datetime.fromtimestamp(e['ts']):%H:%M}"
+        return f"planned for {localtime.at(e['ts']):%H:%M}"
     if ends_at(e) > now:
         return "in progress"
     minutes = round((now - ends_at(e)) / 60)
@@ -331,7 +332,7 @@ def digest(exercises):
         i = e.get("impact") or {}
         low_after = i.get("lowAfter")
         rows.append({
-            "when": datetime.fromtimestamp(e["ts"]).strftime("%a %H:%M"),
+            "when": localtime.at(e["ts"]).strftime("%a %H:%M"),
             "what": label(e),
             "note": e.get("note"),
             "glucoseChange": i.get("change"),
