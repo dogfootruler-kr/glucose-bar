@@ -123,6 +123,7 @@
       <div id="estimateResult" class="small muted"></div>
       <label for="carbs">Carbs (g)</label>
       <input id="carbs" type="number" inputmode="decimal" min="0">
+      <label class="check small" title="High in fat or protein (pizza, curry, a big steak): its carbs are counted as absorbing over 5 hours"><input type="checkbox" id="slow"> Slow meal (high fat or protein)</label>
       <div id="exNear" class="small muted" style="display:none; margin-top:10px"></div>
       <div id="doseBox" class="dose" style="display:none"></div>
       <label class="check" id="alsoDoseRow" style="display:none"><input type="checkbox" id="alsoDose"> Also log <input id="doseUnits" type="number" step="0.5" min="0" style="width:70px"> u rapid insulin</label>
@@ -512,7 +513,7 @@ function resetForm() {
   photoData = null; lastEstimate = null; removePhoto = false; editing = null;
   $('preview').style.display = 'none'; $('estimateResult').textContent = '';
   $('logTitle').textContent = 'Log'; $('cancelEdit').style.display = 'none'; $('deleteEntry').style.display = 'none';
-  $('alsoDose').checked = false;
+  $('alsoDose').checked = false; $('slow').checked = false;
   document.querySelectorAll('[data-kind]').forEach(x => x.disabled = false);
   resetTime(); updateDose();
 }
@@ -525,7 +526,7 @@ function startEdit(e) {
   $('cancelEdit').style.display = ''; $('deleteEntry').style.display = '';
   setTime(e.timestamp);
   if (e.kind === 'meal') {
-    $('mealNote').value = e.note || ''; $('carbs').value = e.carbs ?? '';
+    $('mealNote').value = e.note || ''; $('carbs').value = e.carbs ?? ''; $('slow').checked = !!e.slow;
     if (e.photo) { $('preview').src = e.photo; $('preview').style.display = 'block'; }
   } else if (e.kind === 'exercise') {
     $('activity').value = e.activity || 'other'; $('minutes').value = e.minutes; $('intensity').value = e.intensity || 'moderate'; $('exNote').value = e.note || ''; showIntensityInfo();
@@ -579,7 +580,7 @@ function updateDose() {
   doseTimer = setTimeout(async () => {
     let s;
     try {
-      const r = await fetch(`/dose?carbs=${carbs}&target=${DOSE_TARGET}&low=${LOW}`);
+      const r = await fetch(`/dose?carbs=${carbs}&target=${DOSE_TARGET}&low=${LOW}&slow=${$('slow').checked ? 1 : 0}`);
       s = await r.json();
       if (!r.ok) throw new Error(s.error);
     } catch (e) { $('doseBox').innerHTML = `<span class="muted small">${esc(e.message)}</span>`; $('doseBox').style.display = ''; return; }
@@ -590,7 +591,7 @@ function updateDose() {
     render(s, 'Checking how similar meals went…');
     try {
       const r = await fetch('/dose/history', { method: 'POST', headers: JSON_HEADERS,
-        body: JSON.stringify({ carbs, note: note || null, description, target: DOSE_TARGET, low: LOW, high: HIGH }) });
+        body: JSON.stringify({ carbs, note: note || null, description, target: DOSE_TARGET, low: LOW, high: HIGH, slow: $('slow').checked }) });
       const h = await r.json();
       if (!r.ok) throw new Error(h.error);
       if (seq === doseSeq) render(h);
@@ -640,7 +641,8 @@ $('estimate').onclick = async () => {
 $('save').onclick = async () => {
   const body = { timestamp: new Date($('time').value).toISOString() };
   if (kind === 'meal') {
-    Object.assign(body, { note: $('mealNote').value.trim() || null, carbs: $('carbs').value ? Number($('carbs').value) : null });
+    Object.assign(body, { note: $('mealNote').value.trim() || null, carbs: $('carbs').value ? Number($('carbs').value) : null,
+                          slow: $('slow').checked });
     if (photoData) Object.assign(body, { photo: photoData, mediaType: 'image/jpeg' });
     if (lastEstimate) body.estimate = lastEstimate;
     if (!body.note && body.carbs == null && !photoData && !(editing && editing.photo)) { $('saveMsg').textContent = 'Add a photo, description or carbs.'; return; }

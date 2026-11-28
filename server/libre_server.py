@@ -8,14 +8,15 @@ keeps every reading in a local SQLite database and serves it over HTTP.
   GET /readings?start=&end=   readings between two Unix times
   GET /export.csv             every stored reading
   GET/POST /events            meals, insulin and exercise
-                              (POST {kind, timestamp?, carbs?, units?, insulinType?, activity?, minutes?, intensity?, note?, photo?})
+                              (POST {kind, timestamp?, carbs?, units?, insulinType?, activity?, minutes?, intensity?, note?, photo?,
+                               slow? or absorption? (minutes) for a meal})
   PATCH /events/<id>          change fields (same as POST; "removePhoto": true drops the photo)
   DELETE /events/<id>
   GET /photos/<id>            meal photo
   POST /meals/estimate        {photo?, mediaType?, text?} -> AI carb estimate
   GET /meals?days=30&high=180 meals with their glucose impact and how the insulin dose worked out
   GET /exercise?days=30&low=70 exercise with how glucose responded, during and in the 12 h after
-  GET /dose?carbs=50&target=120&low=70   rapid-insulin suggestion learned from the history
+  GET /dose?carbs=50&target=120&low=70&slow=0   rapid-insulin suggestion learned from the history
   GET /basal?low=70           long-acting checks: last dose, fasting drift, share of the daily dose
   GET /settings               the target range and dose target the web page uses (config "targets")
   POST /dose/history          {carbs, note?, description?, target?, low?, high?} -> the same, adjusted by the AI
@@ -98,10 +99,10 @@ def db():
     conn.execute("""CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL,
         carbs REAL, units REAL, insulin_type TEXT, note TEXT, photo TEXT, estimate TEXT,
-        activity TEXT, minutes REAL, intensity TEXT)""")
+        activity TEXT, minutes REAL, intensity TEXT, absorption REAL)""")
     columns = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
-    for col, kind in (("activity", "TEXT"), ("minutes", "REAL"), ("intensity", "TEXT")):
-        if col not in columns:  # databases from before exercise was logged
+    for col, kind in (("activity", "TEXT"), ("minutes", "REAL"), ("intensity", "TEXT"), ("absorption", "REAL")):
+        if col not in columns:  # databases from before exercise (or slow meals) were logged
             conn.execute(f"ALTER TABLE events ADD COLUMN {col} {kind}")
     conn.execute("""CREATE TABLE IF NOT EXISTS summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL,
@@ -126,6 +127,7 @@ def event_json(r):
         "id": r["id"], "ts": r["ts"], "timestamp": iso(r["ts"]), "kind": r["kind"],
         "carbs": r["carbs"], "units": r["units"], "insulinType": r["insulin_type"], "note": r["note"],
         "activity": r["activity"], "minutes": r["minutes"], "intensity": r["intensity"],
+        "absorption": r["absorption"], "slow": bool(r["absorption"] and r["absorption"] > dosing.CARB_MINUTES),
         # Photos left behind on another computer aren't offered (the row still names them).
         "photo": f"/photos/{r['id']}" if r["photo"] and os.path.exists(os.path.join(PHOTO_DIR, r["photo"])) else None,
         "estimate": json.loads(r["estimate"]) if r["estimate"] else None,
@@ -171,19 +173,31 @@ def add_event(body):
     ts = parse_time(body["timestamp"]) if body.get("timestamp") else int(time.time())
     if kind == "exercise":
         exercise.validate({**body, "ts": ts}, time.time())
+    absorption = absorption_of(body) if kind == "meal" else None
     with db() as conn:
         cur = conn.execute(
-            """INSERT INTO events (ts, kind, carbs, units, insulin_type, note, estimate, activity, minutes, intensity)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO events (ts, kind, carbs, units, insulin_type, note, estimate, activity, minutes, intensity, absorption)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ts, kind, body.get("carbs"), body.get("units"), body.get("insulinType"), (body.get("note") or "").strip() or None,
              json.dumps(body["estimate"]) if body.get("estimate") else None,
-             body.get("activity"), body.get("minutes"), body.get("intensity")))
+             body.get("activity"), body.get("minutes"), body.get("intensity"), absorption))
         eid = cur.lastrowid
         if body.get("photo"):
             save_photo(conn, eid, body)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
     events_version += 1
     return event_json(row)
+
+
+def absorption_of(body):
+    """A meal's absorption time in minutes from a request: "slow": true for dosing.SLOW_MEAL_MINUTES, or
+    "absorption" in minutes (60 to 480); None (the usual 3 h) otherwise."""
+    if body.get("absorption") is not None:
+        value = body["absorption"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 60 <= value <= 480:
+            raise ValueError("absorption must be between 60 and 480 minutes")
+        return float(value)
+    return dosing.SLOW_MEAL_MINUTES if body.get("slow") else None
 
 
 EDITABLE = {"carbs": "carbs", "units": "units", "insulinType": "insulin_type", "note": "note",
@@ -204,6 +218,8 @@ def update_event(eid, body):
             sets["ts"] = parse_time(body["timestamp"])
         if "estimate" in body:
             sets["estimate"] = json.dumps(body["estimate"]) if body["estimate"] else None
+        if row["kind"] == "meal" and ("slow" in body or "absorption" in body):
+            sets["absorption"] = absorption_of(body)
         if row["kind"] == "exercise":
             exercise.validate({k: sets.get(col, row[col]) for k, col in
                                (("activity", "activity"), ("minutes", "minutes"), ("intensity", "intensity"), ("ts", "ts"))},
@@ -241,7 +257,7 @@ def fitted(low=70):
         readings = history(since)
         key = (readings[-1][0] if readings else None, events_version)
         if fit_cache.get(low, (None,))[0] != key:
-            fit_cache[low] = (key, exercise.fit(readings, events(since), low))
+            fit_cache[low] = (key, exercise.fit(readings, events(since), low, since))
         return fit_cache[low][1]
 
 
@@ -289,7 +305,9 @@ def exercise_with_impact(since_ts, low=70):
     return out
 
 
-def dose_suggestion(carbs, target, low):
+def dose_suggestion(carbs, target, low, slow=False):
+    """slow: the meal is slow to absorb (high fat or protein). The dose for it is the same, but its carbs are
+    counted as absorbing over dosing.SLOW_MEAL_MINUTES once it's logged with "slow" ("absorptionMinutes")."""
     dosing.validate_request(carbs, target, low)
     params, fx = fitted(low)
     if not params:
@@ -300,6 +318,7 @@ def dose_suggestion(carbs, target, low):
     fc = insights.forecast(recent) if glucose is not None else None
     s = dosing.suggest(params, carbs, glucose, fc["slope"] if fc else None, events(now - 8 * 3600), now, target, low,
                        exercise.dose_effect(fx, now))
+    s["absorptionMinutes"] = dosing.SLOW_MEAL_MINUTES if slow else dosing.CARB_MINUTES
     return with_long_acting(s, basal.missed(events(now - 30 * 86400, "insulin"), now))
 
 
@@ -357,7 +376,7 @@ def dose_from_history(body):
     nothing to match on, no past meal to compare with, or the formula says no insulin now.
     """
     carbs, low = float(body["carbs"]), int(body.get("low", 70))
-    s = dose_suggestion(carbs, int(body.get("target", 120)), low)
+    s = dose_suggestion(carbs, int(body.get("target", 120)), low, bool(body.get("slow")))
     note, description = (body.get("note") or "").strip(), (body.get("description") or "").strip()
     if not ai.available() or not (note or description) or s["units"] <= 0:
         return s
@@ -712,7 +731,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"targets": TARGETS, "timezone": localtime.describe()})
         elif path == "/dose":
             try:
-                self._json(dose_suggestion(float(q.get("carbs", 0)), int(q.get("target", 120)), int(q.get("low", 70))))
+                self._json(dose_suggestion(float(q.get("carbs", 0)), int(q.get("target", 120)), int(q.get("low", 70)),
+                                           q.get("slow", "").lower() in ("1", "true")))
             except Exception as e:
                 self._json({"error": str(e)}, 400)
         elif path == "/summary":
@@ -781,11 +801,14 @@ def main():
     log(f"AI: {ai.describe()}")
     try:
         localtime.configure(cfg.get("timezone"))
+        dosing.configure_insulin(cfg.get("insulin"))
         dosing.configure(cfg.get("dosing"))
         basal.configure(cfg.get("basal"))
         configure_targets(cfg.get("targets"))
     except ValueError as e:
         sys.exit(f"Config {CONFIG_PATH}: {e}")
+    log(f"Rapid insulin: peak {dosing.INSULIN_PEAK:g} min, lasts {dosing.INSULIN_DIA:g} min; "
+        f"slow meals over {dosing.SLOW_MEAL_MINUTES:g} min")
     log(f"Time zone: {localtime.describe()}; dose limits: {dosing.LIMITS}; basal checks: {basal.LIMITS}; targets: {TARGETS}")
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db().close()

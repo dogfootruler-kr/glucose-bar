@@ -95,8 +95,18 @@ The dose suggestion follows these rules, with a warning in the app whenever one 
 Change them under `"dosing"` in `config.json`, then restart the server. These are the defaults:
 
 ```json
-"dosing": {"maxDoseFraction": 0.25, "maxDoseUnits": 15, "lowLookahead": 30, "trendRecentMinutes": 120, "aiMaxIncrease": 2, "maxCarbs": 300, "lowMinMinutes": 15}
+"dosing": {"maxDoseFraction": 0.25, "maxDoseUnits": 15, "lowLookahead": 30, "trendRecentMinutes": 120, "aiMaxIncrease": 2, "maxCarbs": 300, "lowMinMinutes": 15, "learnMaxIob": 0.3}
 ```
+
+## Insulin type and slow meals
+The insulin still active is worked out from a curve that peaks 75 minutes after a dose and lasts 6 hours (NovoRapid, Humalog, Apidra). Fiasp and Lyumjev act sooner: set `"insulin": {"rapid": "fiasp"}` in `config.json` (or `"lyumjev"`) for a peak at 55 minutes. You can also give `"peak"` and `"dia"` (duration) in minutes, for example `{"peak": 65, "dia": 300}`.
+
+Meals are counted as absorbing over 3 hours. One high in fat or protein can be logged as slow (`"slow": true` on the meal, or the *Slow meal* box on the web page), and its carbs are then counted as absorbing over 5 hours (`"slowMealMinutes"` under `"insulin"`). This affects the insulin-still-active deduction in later suggestions and what's learned from that meal. The dose suggested for the meal itself doesn't change.
+
+How the ratios are learned:
+- **Corrections** count only when no carbs are still absorbing, less than `learnMaxIob` (0.3 u) of earlier rapid insulin is still active, and nothing else is eaten or injected in the 3 hours after. Corrections after which glucose rose are kept as well as those after which it fell, so the sensitivity isn't biased towards the doses that worked.
+- **The daily dose** behind the 500 and 1800 rules is the median over fully logged days. It leaves out today, the partly covered first day of the 30-day history, and days with under half the usual total, when most doses probably weren't logged.
+- **Carb ratios by time of day** change gradually over an hour around 04:00, 11:00 and 16:00, so a meal at 10:59 and one at 11:00 get nearly the same ratio.
 
 ## Long-acting insulin checks
 `GET /basal` checks the long-acting (basal) insulin from what's been logged. It only informs: no dose changes beyond the warning on the suggestion.
@@ -139,7 +149,7 @@ If the short name doesn't resolve, use the full MagicDNS name (`glucose-work.<ta
 | `/events` | GET / POST meals, insulin and exercise; `PATCH` / `DELETE /events/<id>` |
 | `/meals?days=30` | meals with glucose impact and dose outcome |
 | `/exercise?days=30` | exercise with how glucose responded, during and in the 12 h after |
-| `/dose?carbs=50&target=120` | rapid-insulin suggestion and the learned ratios |
+| `/dose?carbs=50&target=120&slow=0` | rapid-insulin suggestion and the learned ratios, with its warnings in `alerts` |
 | `POST /dose/history` | the same, adjusted by Claude for how similar past meals went |
 | `/basal?low=70` | long-acting checks: last dose, fasting drift, share of the daily dose |
 | `/settings` | the target range and dose target the web page uses, and the time zone |

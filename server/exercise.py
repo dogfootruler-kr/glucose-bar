@@ -150,7 +150,7 @@ class Effects(dosing.NoExercise):
 def _unexplained_drop(fx, meals, params, t0, t1, g0, g1):
     """How far glucose fell between t0 and t1 beyond what the carbs and insulin absorbed explain
     (with insulin working harder after earlier exercise), at the learned carb ratio and sensitivity."""
-    icr, isf = params["byTime"][dosing.bucket(t0)]["carbRatio"], params["sensitivity"]
+    icr, isf = dosing.carb_ratio_at(params, t0), params["sensitivity"]
     carbs = dosing._absorbed(meals, t0, t1, "carbs", dosing.carbs_absorbed)
     insulin = dosing._absorbed(fx.rapid, t0, t1, "units", lambda m: 1 - dosing.insulin_on_board(m))
     insulin += fx._extra_insulin(fx._relevant(t0, t1), t0, t1)
@@ -193,23 +193,24 @@ def learn(readings, events, params, low=70):
     return model
 
 
-def fit(readings, events, low=70):
+def fit(readings, events, low=70, since=None):
     """(dosing params or None, Effects), with exercise allowed for in the dosing fit.
+    since: where the history starts (see dosing.fit).
 
     Two passes: the ratios are fitted with the rule-of-thumb exercise rates, the rates are learned
     with those ratios, then the ratios are fitted again with the learned rates.
     """
     exercises, rapid = sessions(events), dosing._rapid(events)
     model = default_model()
-    tdd = dosing.daily_insulin(events)
+    tdd = dosing.daily_insulin(events, since)
     if not exercises or not tdd:
-        params = dosing.fit(readings, events, low)
+        params = dosing.fit(readings, events, low, since=since)
         return params, Effects(exercises, model, params["sensitivity"] if params else ISF_REF, rapid)
-    first = dosing.fit(readings, events, low, Effects(exercises, model, 1800 / tdd, rapid))
+    first = dosing.fit(readings, events, low, Effects(exercises, model, 1800 / tdd, rapid), since)
     if not first:
         return None, Effects(exercises, model, ISF_REF, rapid)
     model = learn(readings, events, first, low)
-    params = dosing.fit(readings, events, low, Effects(exercises, model, first["sensitivity"], rapid))
+    params = dosing.fit(readings, events, low, Effects(exercises, model, first["sensitivity"], rapid), since)
     return params, Effects(exercises, model, params["sensitivity"], rapid)
 
 
