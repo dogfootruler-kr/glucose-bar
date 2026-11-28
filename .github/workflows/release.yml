@@ -45,6 +45,10 @@ jobs:
           if ! grep -q '[^[:space:]]' notes.md; then
             echo "::error::CHANGELOG.md has no '## $GITHUB_REF_NAME' section"; exit 1
           fi
+      - name: Server and Mac app tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s server/tests
+          (cd app && swift test)
       - run: app/bundle.sh "$GITHUB_REF_NAME"
       - run: |
           mkdir dist

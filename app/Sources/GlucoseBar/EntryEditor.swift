@@ -437,15 +437,24 @@ struct DoseSuggestionView: View {
     var body: some View {
         let s = suggestion
         LabeledContent {
-            Text("\(formatUnits(s.units)) u").font(.title2.weight(.semibold)).monospacedDigit()
+            Text("\(formatUnits(s.units)) u\(s.capped == true ? " (capped)" : "")")
+                .font(.title2.weight(.semibold)).monospacedDigit()
+                .foregroundStyle(s.capped == true ? .orange : .primary)
         } label: {
             Text("Suggested dose")
             Text(basis)
         }
-        ForEach([s.warning, s.exercise?.warning].compactMap { $0 }, id: \.self) { warning in
-            Label(warning, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
+        ForEach(s.shownAlerts, id: \.self) { alert in
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    if let title = alert.title { Text(title).fontWeight(.semibold) }
+                    Text(alert.text)
+                }
+            } icon: {
+                Image(systemName: alert.symbol)
+            }
+            .foregroundStyle(alert.level == .danger ? .red : alert.level == .caution ? .orange : .secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         if let h = s.history {
             Label(h.reason, systemImage: "clock.arrow.circlepath")

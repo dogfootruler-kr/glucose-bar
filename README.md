@@ -54,6 +54,20 @@ To publish a release, add a `## v1.2.0` section to [CHANGELOG.md](CHANGELOG.md),
 
 To run your own changes on a Mac, `./install.sh --dev` builds the app and installs the server from the checkout; the updater leaves a dev install alone until you run `./install.sh` again.
 
+Tests run on every push and pull request (`.github/workflows/test.yml`), and again before a release is built. To run them locally:
+
+```bash
+python3 -m unittest discover -s server/tests
+```
+
+```bash
+cd app && swift test
+```
+
+```bash
+cd android && ./gradlew testDebugUnitTest
+```
+
 ## Running the server elsewhere
 The server needs Python 3 and nothing else for glucose. With Claude, meal estimates and weekly summaries also need the Claude Agent SDK and a `claude` login on that computer; the other [AI providers](#ai-providers) need only an API key. On Linux (on Windows, the same with `.venv\Scripts\python` and the config at `%USERPROFILE%\.config\freestyle-bar\config.json`):
 
@@ -91,6 +105,8 @@ The dose suggestion follows these rules, with a warning in the app whenever one 
 - A low counts only once glucose has stayed below the low threshold for `lowMinMinutes` (two readings 15 minutes apart are enough). A single low reading, such as lying on the sensor gives (a compression low), isn't one. This applies when learning the ratios, judging past doses and learning from exercise.
 - The learned carb ratios stay between half and twice the 500/daily-dose rule, as the sensitivity already did.
 - The suggestion warns when no long-acting insulin has been logged for longer than usual (see below).
+
+The Mac and Android apps and the web page show these warnings under the suggested dose, most serious first: heading low and below range in red, a capped dose (also marked "(capped)" next to the number) and a missed long-acting dose in orange. The Windows tray shows a notification when no long-acting has been logged for longer than usual, at most every 6 hours. Older servers send only the plain warning, and the apps still show it.
 
 Change them under `"dosing"` in `config.json`, then restart the server. These are the defaults:
 

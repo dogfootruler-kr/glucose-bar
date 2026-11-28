@@ -216,6 +216,53 @@ struct DoseSuggestion: Decodable {
     /// Set when the AI adjusted the dose for how similar meals went (POST /dose/history).
     let formulaUnits: Double?
     let history: DoseHistory?
+    /// The warnings with what each is about (servers from before v1.4 send only `warning`).
+    let alerts: [DoseAlert]?
+    let capped: Bool?
+    let maxUnits: Double?
+
+    /// What to show under the dose, most serious first; the exercise warning last.
+    var shownAlerts: [DoseAlert] {
+        var out = alerts ?? (warning.map { [DoseAlert(kind: "other", text: $0)] } ?? [])
+        if let w = exercise?.warning { out.append(DoseAlert(kind: "exercise", text: w)) }
+        return out.sorted { $0.level.rawValue > $1.level.rawValue }
+    }
+}
+
+/// One warning on a dose suggestion. kind: belowLow, headingLow, capped, missedLong, noGlucose, exercise or other.
+struct DoseAlert: Decodable, Hashable {
+    enum Level: Int { case info, caution, danger }
+    let kind: String
+    let text: String
+
+    var level: Level {
+        switch kind {
+        case "belowLow", "headingLow": .danger
+        case "capped", "missedLong", "exercise", "other": .caution
+        default: .info
+        }
+    }
+
+    var title: String? {
+        switch kind {
+        case "belowLow": "Below range"
+        case "headingLow": "Heading low"
+        case "capped": "Dose capped"
+        case "missedLong": "Long-acting not logged"
+        case "noGlucose": "No recent reading"
+        default: nil
+        }
+    }
+
+    var symbol: String {
+        switch kind {
+        case "belowLow", "headingLow": "arrow.down.circle.fill"
+        case "capped": "hand.raised.fill"
+        case "missedLong": "syringe.fill"
+        case "noGlucose": "questionmark.circle"
+        default: "exclamationmark.triangle.fill"
+        }
+    }
 }
 
 /// The AI's change to the formula's dose, from past meals of the same food.

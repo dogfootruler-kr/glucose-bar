@@ -213,13 +213,46 @@ data class DoseSuggestion(
     /** Set when the AI adjusted the dose for how similar meals went (POST /dose/history). */
     val formulaUnits: Double? = null,
     val history: History? = null,
+    /** The warnings with what each is about (servers from before v1.4 send only [warning]). */
+    val alerts: List<DoseAlert>? = null,
+    val capped: Boolean? = null,
+    val maxUnits: Double? = null,
 ) {
     @Serializable
     data class Period(val carbRatio: Double, val meals: Int)
 
+    /** What to show under the dose, most serious first. */
+    val shownAlerts: List<DoseAlert>
+        get() = ((alerts ?: listOfNotNull(warning?.let { DoseAlert("other", it) }))
+            + listOfNotNull(exercise?.warning?.let { DoseAlert("exercise", it) }))
+            .sortedByDescending { it.level.ordinal }
+
     /** The AI's change to the formula's dose, from past meals of the same food. */
     @Serializable
     data class History(val units: Double, val reason: String, val meals: Int)
+}
+
+/** One warning on a dose suggestion. kind: belowLow, headingLow, capped, missedLong, noGlucose, exercise or other. */
+@Serializable
+data class DoseAlert(val kind: String, val text: String) {
+    enum class Level { Info, Caution, Danger }
+
+    val level: Level
+        get() = when (kind) {
+            "belowLow", "headingLow" -> Level.Danger
+            "capped", "missedLong", "exercise", "other" -> Level.Caution
+            else -> Level.Info
+        }
+
+    val title: String?
+        get() = when (kind) {
+            "belowLow" -> "Below range"
+            "headingLow" -> "Heading low"
+            "capped" -> "Dose capped"
+            "missedLong" -> "Long-acting not logged"
+            "noGlucose" -> "No recent reading"
+            else -> null
+        }
 }
 
 @Serializable
