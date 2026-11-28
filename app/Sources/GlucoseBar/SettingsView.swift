@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage("alertHigh") private var alertHigh = 250
     @AppStorage("alertFastDrop") private var alertFastDrop = true
     @AppStorage("alertPredictedLow") private var alertPredictedLow = true
+    @AppStorage("alertCorrection") private var alertCorrection = true
     @AppStorage("staleMinutes") private var staleMinutes = 20
     @AppStorage("sensorDays") private var sensorDays = 14
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -86,10 +87,11 @@ struct SettingsView: View {
                     glucoseStepper("High alert at or above", $alertHigh, 150...400)
                     Toggle("Dropping fast below \(store.format(100))", isOn: $alertFastDrop)
                     Toggle("Heading low within 20 minutes", isOn: $alertPredictedLow)
+                    Toggle("Suggest a correction when high and not coming down", isOn: $alertCorrection)
                 } header: {
                     Text("Glucose")
                 } footer: {
-                    Text("For 4 to 6 hours after moderate or hard exercise (2 hours more after 90 minutes or longer), heading-low and dropping-fast alerts come earlier.")
+                    Text("For 4 to 6 hours after moderate or hard exercise (2 hours more after 90 minutes or longer), heading-low and dropping-fast alerts come earlier. Correction suggestions come after 30 minutes above your target range while glucose isn't falling, with no rapid insulin in the last 3 hours and no carbs still digesting, at most every 2 hours; the dose allows for insulin still active and is never more than the dose cap.")
                 }
                 .disabled(!alertsEnabled)
                 Section {

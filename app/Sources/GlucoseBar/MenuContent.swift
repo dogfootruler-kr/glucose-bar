@@ -73,6 +73,10 @@ struct MenuContent: View {
             Label("Heading low: \(store.format(hit.mgdl)) around \(hit.date.formatted(date: .omitted, time: .shortened))",
                   systemImage: "exclamationmark.triangle.fill")
                 .font(.caption.bold()).foregroundStyle(.red)
+        } else if let c = store.state?.correction, c.due, let units = c.units, let minutes = c.minutesHigh {
+            Label("High for \(minutes) min: a correction of about \(formatUnits(units)) u is suggested. Check before dosing.",
+                  systemImage: "syringe")
+                .font(.caption.bold()).foregroundStyle(.orange)
         } else if let v = fc.in30, abs(fc.slope) >= 1 {
             Label("About \(store.format(v)) in 30 min if the trend continues", systemImage: "chart.line.uptrend.xyaxis")
                 .font(.caption).foregroundStyle(.secondary)

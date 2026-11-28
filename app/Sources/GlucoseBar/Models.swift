@@ -363,8 +363,31 @@ struct ServerState: Decodable {
     let forecast: Forecast?
     let events: [GlucoseEvent]?
     let postExercise: PostExercise?
+    /// Whether to remind about a correction dose (servers from v1.5).
+    let correction: CorrectionReminder?
     let aiAvailable: Bool?
     let error: String?
+}
+
+/// The server's view on whether glucose has been high long enough, without coming down, to suggest a correction.
+struct CorrectionReminder: Decodable {
+    let due: Bool
+    let reason: String?
+    let units: Double?
+    let glucose: Int?
+    let high: Int?
+    let since: Double?
+    let minutesHigh: Int?
+    let text: String?
+    let repeatMinutes: Double?
+
+    /// Notification title and body in the user's units, or nil when no reminder is due.
+    func message(mmol: Bool) -> (title: String, body: String)? {
+        guard due, let units, let glucose, let high, let minutesHigh else { return nil }
+        return ("Correction suggested: \(formatUnits(units)) u",
+                "Glucose has been above \(formatGlucose(high, mmol: mmol)) for \(minutesHigh) min (now \(formatGlucose(glucose, mmol: mmol))) "
+                + "and isn't coming down. If you haven't taken insulin you didn't log, consider \(formatUnits(units)) u. Check before dosing.")
+    }
 }
 
 struct Stats: Decodable {
@@ -394,6 +417,7 @@ enum SettingDefaults {
         "alertLow": 70, "alertHigh": 250,
         "alertFastDrop": true,
         "alertPredictedLow": true,
+        "alertCorrection": true,
         "staleMinutes": 20,
         "sensorDays": 14,
         "doseTarget": 120,

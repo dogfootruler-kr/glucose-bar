@@ -331,8 +331,24 @@ data class ServerState(
     val forecast: Forecast? = null,
     val events: List<GlucoseEvent> = emptyList(),
     val postExercise: PostExercise? = null,
+    /** Whether to remind about a correction dose (servers from v1.5). */
+    val correction: CorrectionReminder? = null,
     val aiAvailable: Boolean = false,
     val error: String? = null,
+)
+
+/** The server's view on whether glucose has been high long enough, without coming down, to suggest a correction. */
+@Serializable
+data class CorrectionReminder(
+    val due: Boolean = false,
+    val reason: String? = null,
+    val units: Double? = null,
+    val glucose: Int? = null,
+    val high: Int? = null,
+    val since: Double? = null,
+    val minutesHigh: Int? = null,
+    val text: String? = null,
+    val repeatMinutes: Double? = null,
 )
 
 @Serializable
@@ -382,6 +398,7 @@ data class Settings(
     val alertHigh: Int = 250,
     val alertFastDrop: Boolean = true,
     val alertPredictedLow: Boolean = true,
+    val alertCorrection: Boolean = true,
     val staleMinutes: Int = 20,
     val sensorDays: Int = 14,
     val doseTarget: Int = 120,

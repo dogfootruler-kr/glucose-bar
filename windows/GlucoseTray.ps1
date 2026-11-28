@@ -16,13 +16,14 @@ $Config = [ordered]@{
     alertLow = 70
     alertHigh = 250
     staleMinutes = 20
+    correctionAlerts = $true   # the server's suggestion to correct after a sustained high (servers from v1.5)
 }
 if (Test-Path $ConfigPath) {
     (Get-Content $ConfigPath -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $Config[$_.Name] = $_.Value }
 }
 $Server = $Config.server.TrimEnd('/')
 
-$State = @{ reading = $null; post = $null; slope = $null; error = $null; lastAlert = @{}; snoozeUntil = [DateTime]::MinValue; iconHandle = [IntPtr]::Zero }
+$State = @{ reading = $null; post = $null; slope = $null; correction = $null; error = $null; lastAlert = @{}; snoozeUntil = [DateTime]::MinValue; iconHandle = [IntPtr]::Zero }
 
 function Format-Glucose([int]$mgdl) {
     if ($Config.mmol) { return ($mgdl / 18.0182).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) }
@@ -71,6 +72,7 @@ function Update-Glucose {
         $resp = Invoke-RestMethod -Uri "$Server/glucose?hours=1" -TimeoutSec 10
         $State.reading = $resp.reading
         $State.post = $resp.postExercise
+        $State.correction = $resp.correction
         $State.slope = if ($resp.forecast) { $resp.forecast.slope } else { $null }
         $State.error = $resp.error
     } catch {
@@ -115,6 +117,14 @@ function Update-Glucose {
         Send-Alert 'postExercise' "Falling after exercise: $(Format-Glucose $mgdl) $unit $($r.arrow)" "Low alerts come earlier after your $($State.post.label)." 20
     } elseif ($mgdl -ge $Config.alertHigh) {
         Send-Alert 'high' "High: $(Format-Glucose $mgdl) $unit $($r.arrow)" 'Glucose is at or above your high alert.' 60
+    }
+    # The server decides when a correction is worth suggesting (server/correction.py); only a suggestion.
+    $c = $State.correction
+    if (-not $stale -and $Config.correctionAlerts -and $c -and $c.due -and $mgdl -gt $Config.alertLow) {
+        $u = if ($c.units -eq [Math]::Floor($c.units)) { "$([int]$c.units)" } else { '{0:0.0}' -f $c.units }
+        $repeat = if ($c.repeatMinutes) { [int]$c.repeatMinutes } else { 120 }
+        Send-Alert 'correction' "Correction suggested: $u u" ("Glucose has been above $(Format-Glucose ([int]$c.high)) $unit for $($c.minutesHigh) min " +
+            "(now $(Format-Glucose ([int]$c.glucose))) and isn't coming down. If you haven't taken insulin you didn't log, consider $u u. Check before dosing.") $repeat
     }
 }
 

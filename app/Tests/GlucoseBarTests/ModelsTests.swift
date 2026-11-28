@@ -78,3 +78,27 @@ final class DoseSuggestionTests: XCTestCase {
         XCTAssertNil(DoseAlert(kind: "somethingNew", text: "").title)
     }
 }
+
+final class CorrectionReminderTests: XCTestCase {
+    private func decode(_ json: String) throws -> CorrectionReminder {
+        try JSONDecoder().decode(CorrectionReminder.self, from: Data(json.utf8))
+    }
+
+    func testDueReminderInEitherUnit() throws {
+        let c = try decode(#"{"due": true, "units": 2.5, "glucose": 250, "high": 180, "since": 1800000000, "minutesHigh": 40, "repeatMinutes": 120}"#)
+        let mg = try XCTUnwrap(c.message(mmol: false))
+        XCTAssertEqual(mg.title, "Correction suggested: 2.5 u")
+        XCTAssertTrue(mg.body.contains("above 180 for 40 min (now 250)"))
+        XCTAssertTrue(mg.body.contains("Check before dosing."))
+        XCTAssertTrue(try XCTUnwrap(c.message(mmol: true)).body.contains("above 10.0 for 40 min (now 13.9)"))
+    }
+
+    func testNotDueHasNoMessage() throws {
+        XCTAssertNil(try decode(#"{"due": false, "reason": "recentInsulin"}"#).message(mmol: false))
+    }
+
+    func testOlderServerHasNoReminder() throws {
+        let state = try JSONDecoder().decode(ServerState.self, from: Data(#"{"history": []}"#.utf8))
+        XCTAssertNil(state.correction)
+    }
+}

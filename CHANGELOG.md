@@ -3,6 +3,9 @@
 Each release needs a section here, headed `## vX.Y.Z`, before its tag is pushed: the release
 workflow publishes that section as the release notes and stops if it's missing.
 
+## v1.5.0 — 2026-11-28
+- Correction suggestions: when glucose has been above your target range for 30 minutes and isn't coming down, the Mac, Android and Windows apps notify you of a suggested correction dose, and the web page shows it. It's left out within 3 hours of logged rapid insulin or while carbs are still digesting. It uses the dose suggestion's own rules (insulin still active taken off, the dose cap, nothing when heading low), comes only for at least 1 u, and repeats at most every 2 hours. It's a suggestion to check before dosing, and each app has a switch for it. Settings are under `"correctionAlerts"` in `config.json` (see Correction suggestions in the README)
+
 ## v1.4.0 — 2026-11-28
 - Safer dose suggestions: never more than a quarter of your usual daily dose or 15 u (marked "capped"); no insulin when you're below range or the forecast says you'll be low within 30 minutes; a rising trend no longer adds insulin on top of a meal still digesting or insulin still working; and the adjustment from past meals only moves the carb part, by at most 2 u up. All limits can be changed under `"dosing"` in `config.json` (see Dose safety limits in the README)
 - The apps, web page and Windows tray show dose warnings more clearly, most serious first: heading low and below range in red, a capped dose and a missed long-acting dose in orange

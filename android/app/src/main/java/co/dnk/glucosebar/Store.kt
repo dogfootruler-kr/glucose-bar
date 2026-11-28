@@ -188,6 +188,7 @@ object Store {
             alertHigh = int("alertHigh", d.alertHigh),
             alertFastDrop = bool("alertFastDrop", d.alertFastDrop),
             alertPredictedLow = bool("alertPredictedLow", d.alertPredictedLow),
+            alertCorrection = bool("alertCorrection", d.alertCorrection),
             staleMinutes = int("staleMinutes", d.staleMinutes),
             sensorDays = int("sensorDays", d.sensorDays),
             doseTarget = int("doseTarget", d.doseTarget),
@@ -211,6 +212,7 @@ object Store {
             .putInt("alertHigh", s.alertHigh)
             .putBoolean("alertFastDrop", s.alertFastDrop)
             .putBoolean("alertPredictedLow", s.alertPredictedLow)
+            .putBoolean("alertCorrection", s.alertCorrection)
             .putInt("staleMinutes", s.staleMinutes)
             .putInt("sensorDays", s.sensorDays)
             .putInt("doseTarget", s.doseTarget)
@@ -233,7 +235,7 @@ object Store {
             try {
                 // The widget shows up to 6 hours.
                 val hours = if (full) maxOf(s.chartHours, 6) else 6
-                val state: ServerState = get("/glucose?hours=$hours")
+                val state: ServerState = get("/glucose?hours=$hours&high=${s.targetHigh}&low=${s.targetLow}&target=${s.doseTarget}")
                 _data.update { it.copy(state = state, aiAvailable = state.aiAvailable) }
                 if (full) {
                     val stats: StatsResponse = get("/stats?low=${s.targetLow}&high=${s.targetHigh}")
