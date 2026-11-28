@@ -5,7 +5,8 @@ sensitivity 1800/TDD). Each logged meal then shows what ratio it actually took: 
 divided by insulin absorbed, adjusted for where glucose ended relative to where it started.
 Correction doses taken away from meals do the same for sensitivity. The medians of those are
 blended with the rules of thumb, so a few meals move the numbers a little and many move them a lot.
-Absorption uses standard curves: carbs over 3 h, rapid insulin peaking at 75 min and lasting 6 h.
+Absorption uses standard curves: carbs over 3 h (5 h for a meal logged as slow), rapid insulin
+peaking at 75 min (55 for Fiasp or Lyumjev, see configure_insulin) and lasting 6 h.
 Logged exercise is allowed for throughout (see exercise.py): the glucose it took off is added back
 before meals and doses are judged or learned from.
 
@@ -13,12 +14,59 @@ This is an estimate from self-logged data, not medical advice.
 """
 import bisect
 import math
-from datetime import datetime
+
+import localtime
 
 CARB_MINUTES = 180
 INSULIN_DIA = 360
 INSULIN_PEAK = 75
 MEAL_GROUP = 45 * 60      # meals this close together share one dose
+
+# Safety limits for suggestions; each can be set under "dosing" in config.json (see configure).
+LIMITS = {
+    "maxDoseFraction": 0.25,  # most one suggestion can be, as a share of the average total daily dose
+    "maxDoseUnits": 15.0,     # and never more than this, whatever the daily dose
+    "lowLookahead": 30,       # minutes ahead the forecast is checked for heading low
+    "trendRecentMinutes": 120,  # no upward trend added within this long of a rapid dose
+    "aiMaxIncrease": 2.0,     # most units the AI's food history can add to the formula's dose
+    "maxCarbs": 300,          # grams one suggestion can be asked for
+    "lowMinMinutes": 15,      # how long glucose has to stay below low for it to count as a low
+    "learnMaxIob": 0.3,       # most earlier rapid insulin (units) still active for a correction to be learned from
+}
+LOW_GAP = 20 * 60             # readings further apart than this don't make one low
+
+
+def configure(cfg):
+    """Override LIMITS from config.json's "dosing" object. Unknown keys and non-positive values are refused."""
+    for key, value in (cfg or {}).items():
+        if key not in LIMITS:
+            raise ValueError(f'unknown "dosing" setting "{key}" (known: {", ".join(LIMITS)})')
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(f'"dosing.{key}" must be a positive number')
+        if key == "maxDoseFraction" and value > 1:
+            raise ValueError('"dosing.maxDoseFraction" must be at most 1')
+        LIMITS[key] = float(value)
+
+
+def validate_request(carbs, target, low):
+    """Refuses dose requests outside sensible ranges (ValueError)."""
+    for name, value in (("carbs", carbs), ("target", target), ("low", low)):
+        if value is None or not math.isfinite(value):
+            raise ValueError(f"{name} must be a number")
+    if not 0 <= carbs <= LIMITS["maxCarbs"]:
+        raise ValueError(f"carbs must be between 0 and {LIMITS['maxCarbs']:g} g")
+    if not 70 <= target <= 200:
+        raise ValueError("target must be between 70 and 200 mg/dL")
+    if not 50 <= low <= 200:
+        raise ValueError("low must be between 50 and 200 mg/dL")
+
+
+def max_units(params):
+    """The most one suggestion can be: a share of the average daily dose, never above the hard maximum."""
+    cap = LIMITS["maxDoseUnits"]
+    if params.get("dailyDose"):
+        cap = min(cap, LIMITS["maxDoseFraction"] * params["dailyDose"])
+    return math.floor(cap * 2) / 2
 
 
 class NoExercise:
@@ -41,10 +89,22 @@ class NoExercise:
 NO_EXERCISE = NoExercise()
 
 
-def carbs_absorbed(minutes):
-    """Fraction of a meal's carbs absorbed after `minutes` (Loop's parabolic curve)."""
-    t = max(0.0, min(1.0, minutes / CARB_MINUTES))
+def carbs_absorbed(minutes, duration=None):
+    """Fraction of a meal's carbs absorbed after `minutes` (Loop's parabolic curve) over `duration`
+    minutes (CARB_MINUTES unless the meal was logged as slow)."""
+    t = max(0.0, min(1.0, minutes / (duration or CARB_MINUTES)))
     return 2 * t * t if t < 0.5 else -1 + 4 * t - 2 * t * t
+
+
+def meal_absorbed(e, minutes):
+    """Fraction of meal e's carbs absorbed `minutes` after it, over its own absorption time."""
+    return carbs_absorbed(minutes, e.get("absorption"))
+
+
+# Rapid insulin types: when the action peaks, in minutes. Duration of action is set apart (INSULIN_DIA).
+INSULIN_TYPES = {"novorapid": 75, "novolog": 75, "humalog": 75, "admelog": 75, "apidra": 75,
+                 "fiasp": 55, "lyumjev": 55}
+SLOW_MEAL_MINUTES = 300   # absorption time of a meal logged as slow (high fat or protein)
 
 
 def _insulin_curve():
@@ -58,6 +118,32 @@ def _insulin_curve():
 _TD, _TAU, _A, _S = _insulin_curve()
 
 
+def configure_insulin(cfg):
+    """config.json "insulin": {"rapid": a name from INSULIN_TYPES, "peak": minutes, "dia": minutes,
+    "slowMealMinutes": minutes}. Missing keys keep the defaults (peak 75, 6 h, slow meals over 5 h)."""
+    global INSULIN_PEAK, INSULIN_DIA, SLOW_MEAL_MINUTES, _TD, _TAU, _A, _S
+    cfg = dict(cfg or {})
+    unknown = set(cfg) - {"rapid", "peak", "dia", "slowMealMinutes"}
+    if unknown:
+        raise ValueError(f'unknown "insulin" setting "{sorted(unknown)[0]}" (known: rapid, peak, dia, slowMealMinutes)')
+    peak, dia, slow = INSULIN_PEAK, INSULIN_DIA, SLOW_MEAL_MINUTES
+    if "rapid" in cfg:
+        name = str(cfg["rapid"]).lower()
+        if name not in INSULIN_TYPES:
+            raise ValueError(f'"insulin.rapid" must be one of {", ".join(INSULIN_TYPES)} (or set "peak" instead)')
+        peak = INSULIN_TYPES[name]
+    for key, lo, hi in (("peak", 35, 120), ("dia", 180, 600), ("slowMealMinutes", 180, 480)):
+        if key in cfg:
+            v = cfg[key]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+                raise ValueError(f'"insulin.{key}" must be between {lo} and {hi} minutes')
+    peak, dia, slow = cfg.get("peak", peak), cfg.get("dia", dia), cfg.get("slowMealMinutes", slow)
+    if 2 * peak >= dia:
+        raise ValueError('"insulin.peak" must be less than half of "insulin.dia"')
+    INSULIN_PEAK, INSULIN_DIA, SLOW_MEAL_MINUTES = float(peak), float(dia), float(slow)
+    _TD, _TAU, _A, _S = _insulin_curve()
+
+
 def insulin_on_board(minutes):
     """Fraction of a rapid-acting dose still active after `minutes` (exponential model used by Loop/oref)."""
     t = minutes
@@ -69,11 +155,14 @@ def insulin_on_board(minutes):
 
 
 def _absorbed(events, t0, t1, field, curve):
+    """Amount of `field` absorbed between t0 and t1. curve(minutes) gives the fraction absorbed;
+    for carbs_absorbed each meal's own absorption time is used."""
     total = 0.0
     for e in events:
         amount = e.get(field) or 0
         if amount and e["ts"] < t1:
-            total += amount * (curve((t1 - e["ts"]) / 60) - curve((t0 - e["ts"]) / 60))
+            f = (lambda m, e=e: meal_absorbed(e, m)) if curve is carbs_absorbed else curve
+            total += amount * (f((t1 - e["ts"]) / 60) - f((t0 - e["ts"]) / 60))
     return total
 
 
@@ -88,32 +177,42 @@ def _reading_at(readings, idx_ts, ts, tolerance=7 * 60):
     return best[1] if best else None
 
 
-def daily_insulin(events):
-    """Average total daily dose (rapid + long) over past days with insulin logged.
+def _median(values):
+    values = sorted(values)
+    mid = len(values) // 2
+    return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
 
-    Days with long-acting logged are preferred, since a day without it is probably incomplete.
+
+def daily_insulin(events, since=None):
+    """Typical total daily dose (rapid + long): the median over past days that look fully logged.
+
+    Fully logged: long-acting logged that day, not today (still going) and not the day `since` falls
+    on (only partly in the history), and not sparse (under half the median of those days, as when
+    most doses weren't logged). Falls back to any past day, then to whatever there is.
     """
     days, with_long = {}, set()
-    today = datetime.now().date()
+    today = localtime.now().date()
+    edge = localtime.at(since).date() if since is not None else None
     for e in events:
         if e["kind"] == "insulin" and e.get("units"):
-            day = datetime.fromtimestamp(e["ts"]).date()
+            day = localtime.at(e["ts"]).date()
             days[day] = days.get(day, 0) + e["units"]
             if e.get("insulinType") == "long":
                 with_long.add(day)
-    full = [v for d, v in days.items() if d in with_long and d != today] \
-        or [v for d, v in days.items() if d != today] or list(days.values())
-    return sum(full) / len(full) if full else None
+    past = {d: v for d, v in days.items() if d != today and d != edge}
+    full = [v for d, v in past.items() if d in with_long]
+    if len(full) >= 3:
+        typical = _median(full)
+        full = [v for v in full if v >= typical / 2]
+    full = full or list(past.values()) or list(days.values())
+    return _median(full) if full else None
 
 
 def _shrink(values, prior, k):
     """Median of values pulled towards prior as if prior were k extra observations."""
     if not values:
         return prior
-    values = sorted(values)
-    mid = len(values) // 2
-    median = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
-    return (len(values) * median + k * prior) / (len(values) + k)
+    return (len(values) * _median(values) + k * prior) / (len(values) + k)
 
 
 def _rapid(events):
@@ -135,29 +234,69 @@ def meal_groups(meals):
     return groups
 
 
-def _corrections(readings, index, rapid, meals, low, fx=NO_EXERCISE):
-    """mg/dL drop per unit for doses taken with no meal 2 h before to 3 h after.
+def low_runs(readings, low):
+    """Lows in readings ([(ts, mgdl)] sorted): runs below `low` lasting at least LIMITS["lowMinMinutes"].
 
-    The part of the drop that exercise explains is taken out; doses where it explains most of it are skipped.
+    A single reading below low, as a sensor pressed on during sleep gives (a compression low), isn't one.
+    Each is {"start", "end", "mgdl" (lowest), "ts" (when it was lowest)}.
+    """
+    runs, cur = [], None
+    for ts, v in readings:
+        if v < low and cur and ts - cur["end"] <= LOW_GAP:
+            cur["end"] = ts
+            if v < cur["mgdl"]:
+                cur["mgdl"], cur["ts"] = v, ts
+        elif v < low:
+            cur = {"start": ts, "end": ts, "mgdl": v, "ts": ts}
+            runs.append(cur)
+        else:
+            cur = None
+    return [r for r in runs if r["end"] - r["start"] >= LIMITS["lowMinMinutes"] * 60]
+
+
+def first_low(readings, low, t0, t1, index=None):
+    """The first low (see low_runs) starting between t0 and t1, or None. index: the readings' timestamps,
+    to look only at the readings near the window; a low running on past t1 is still seen whole."""
+    if index is not None:
+        readings = readings[_lo(index, t0):_lo(index, t1 + LIMITS["lowMinMinutes"] * 60 + LOW_GAP)]
+    return next((r for r in low_runs(readings, low) if t0 <= r["start"] < t1), None)
+
+
+def _iob(rapid, t, skip=None):
+    """Units of rapid insulin still active at t, from doses up to t (leaving out `skip`)."""
+    return sum(e["units"] * insulin_on_board((t - e["ts"]) / 60) for e in rapid if e is not skip and e["ts"] <= t)
+
+
+def _cob(meals, t):
+    """Grams of carbs still being absorbed at t."""
+    return sum(e["carbs"] * (1 - meal_absorbed(e, (t - e["ts"]) / 60)) for e in meals if e["ts"] <= t)
+
+
+def _corrections(readings, index, rapid, meals, low, fx=NO_EXERCISE):
+    """mg/dL drop per unit (negative if glucose rose) for correction doses: taken with nothing else
+    going on, i.e. carbs on board under 1 g and less than LIMITS["learnMaxIob"] units of earlier insulin
+    active when taken, and no meal or other rapid dose in the 3 h after.
+
+    Doses followed by a low in those 3 h are left out (the low ends the measurement early), as are
+    doses where exercise explains most of the change; the part exercise explains is taken out of the rest.
     """
     out = []
     for e in rapid:
         t = e["ts"]
-        if any(t - 2 * 3600 <= m["ts"] <= t + 3 * 3600 for m in meals):
+        if any(t <= m["ts"] <= t + 3 * 3600 for m in meals) or _cob(meals, t) >= 1:
             continue
-        if any(o is not e and abs(o["ts"] - t) <= 3 * 3600 for o in rapid):
+        if any(o is not e and t < o["ts"] <= t + 3 * 3600 for o in rapid) or _iob(rapid, t, e) >= LIMITS["learnMaxIob"]:
             continue
         g0, g1 = _reading_at(readings, index, t), _reading_at(readings, index, t + 3 * 3600)
-        inside = [v for _, v in readings[_lo(index, t):_lo(index, t + 3 * 3600)]]
-        if g0 is None or g1 is None or not inside or min(inside) < low:
+        inside = readings[_lo(index, t):_lo(index, t + 3 * 3600)]
+        if g0 is None or g1 is None or not inside or first_low(readings, low, t, t + 3 * 3600, index):
             continue
         exercised = fx.lowered(t, t + 3 * 3600)
         if exercised > 25 and exercised > 0.5 * max(g0 - g1, 1):
             continue
         g1 += exercised
         absorbed = e["units"] * (1 - insulin_on_board(180))
-        if g0 > g1:
-            out.append((g0 - g1) / absorbed)
+        out.append((g0 - g1) / absorbed)
     return out
 
 
@@ -176,7 +315,8 @@ def _meal_ratios(readings, index, rapid, meals, isf, low, fx=NO_EXERCISE):
         end = start + 4 * 3600
         if gi + 1 < len(groups):
             end = min(end, groups[gi + 1][0]["ts"])
-        lo = next((ts for ts, v in readings[_lo(index, start):_lo(index, end)] if v < low), None)
+        lo = first_low(readings, low, start, end, index)
+        lo = lo and lo["start"]
         if lo:
             end = lo
         if end - start < 2 * 3600 and not lo:
@@ -197,22 +337,40 @@ def _meal_ratios(readings, index, rapid, meals, isf, low, fx=NO_EXERCISE):
 
 
 BUCKETS = (("morning", 4, 11), ("midday", 11, 16), ("evening", 16, 28))
+BLEND_HOURS = 1.0   # carb ratios change gradually over this long around each boundary
 
 
 def bucket(ts):
-    h = datetime.fromtimestamp(ts).hour
+    h = localtime.at(ts).hour
     h = h + 24 if h < 4 else h
     return next(name for name, a, b in BUCKETS if a <= h < b)
 
 
-def fit(readings, events, low=70, fx=NO_EXERCISE):
+def carb_ratio_at(params, ts):
+    """The carb ratio for a meal at ts: its time of day's, moving linearly to the next one's over
+    BLEND_HOURS centred on each boundary (so 10:59 and 11:00 get nearly the same ratio)."""
+    by_time = params["byTime"]
+    dt = localtime.at(ts)
+    x = dt.hour + dt.minute / 60 + dt.second / 3600
+    half = BLEND_HOURS / 2
+    for i, (name, start, _) in enumerate(BUCKETS):
+        before = BUCKETS[i - 1][0]
+        d = (x - start % 24 + 12) % 24 - 12   # hours since this boundary, -12 to 12
+        if -half <= d < half:
+            w = (d + half) / BLEND_HOURS
+            return round((1 - w) * by_time[before]["carbRatio"] + w * by_time[name]["carbRatio"], 1)
+    return by_time[bucket(ts)]["carbRatio"]
+
+
+def fit(readings, events, low=70, fx=NO_EXERCISE, since=None):
     """Carb ratio (g/u) and sensitivity (mg/dL per u) from history. readings: [(ts, mgdl)] sorted.
 
     Starts from the rules of thumb (500 and 1800 divided by the total daily dose) and moves towards
     what the logged meals and correction doses show as they accumulate. fx: exercise effects to allow for.
+    since: where the history starts, so the partly covered first day isn't counted in the daily dose.
     """
     rapid, meals = _rapid(events), _meals(events)
-    tdd = daily_insulin(events)
+    tdd = daily_insulin(events, since)
     if not tdd or not rapid or not readings:
         return None
     isf0, icr0 = 1800 / tdd, 500 / tdd
@@ -221,11 +379,13 @@ def fit(readings, events, low=70, fx=NO_EXERCISE):
     corrections = _corrections(readings, index, rapid, meals, low, fx)
     isf = max(isf0 / 2, min(isf0 * 2, _shrink(corrections, isf0, 3)))
     ratios = _meal_ratios(readings, index, rapid, meals, isf, low, fx)
-    icr = _shrink([r["ratio"] for r in ratios], icr0, 3)
+    # Like the sensitivity, the carb ratios stay within half and twice the rule of thumb.
+    icr = max(icr0 / 2, min(icr0 * 2, _shrink([r["ratio"] for r in ratios], icr0, 3)))
     by_time = {}
     for name, _, _ in BUCKETS:
         values = [r["ratio"] for r in ratios if bucket(r["ts"]) == name]
-        by_time[name] = {"carbRatio": round(_shrink(values, icr, 2), 1), "meals": len(values)}
+        ratio = max(icr0 / 2, min(icr0 * 2, _shrink(values, icr, 2)))
+        by_time[name] = {"carbRatio": round(ratio, 1), "meals": len(values)}
     return {
         "carbRatio": round(icr, 1),
         "sensitivity": round(isf),
@@ -249,38 +409,69 @@ def suggest(params, carbs, glucose, slope, events, now, target=120, low=70, exer
     glucose: latest mg/dL (None if unknown); slope: mg/dL per minute from the forecast (None if unknown).
     Insulin still active is subtracted, minus what the carbs still being absorbed will need.
     exercise: optional function (carb units, correction units) -> {"units": less needed, ...} or None.
+
+    Safety rules (limits in LIMITS):
+    - below low now, or heading below it within lowLookahead minutes on the forecast: no insulin;
+    - a rising trend adds nothing while carbs are still being absorbed, within trendRecentMinutes of
+      a rapid dose, or while insulin is still active (it would undo that deduction); a falling one always counts;
+    - the result is never more than max_units(params).
     """
     period = bucket(now)
-    icr, isf = params["byTime"][period]["carbRatio"], params["sensitivity"]
+    icr, isf = carb_ratio_at(params, now), params["sensitivity"]
     rapid, meals = _rapid(events), _meals(events)
-    iob = sum(e["units"] * insulin_on_board((now - e["ts"]) / 60) for e in rapid if e["ts"] <= now)
-    cob = sum(e["carbs"] * (1 - carbs_absorbed((now - e["ts"]) / 60)) for e in meals if e["ts"] <= now)
+    iob = _iob(rapid, now)
+    cob = _cob(meals, now)
     active = max(0.0, iob - cob / icr)
+    recent_bolus = any(0 <= now - e["ts"] <= LIMITS["trendRecentMinutes"] * 60 for e in rapid)
 
     carb_units = carbs / icr
     correction = (glucose - target) / isf if glucose is not None else 0.0
     trend = max(-60, min(60, slope * 30)) / isf if slope is not None and glucose is not None else 0.0
+    # A rise while a meal is still going in or insulin is still working is what the COB and IOB above
+    # already account for; adding it again stacks insulin.
+    trend_held = trend > 0 and (cob >= 1 or recent_bolus or active > 0)
+    if trend_held:
+        trend = 0.0
+    predicted = glucose + slope * LIMITS["lowLookahead"] if slope is not None and glucose is not None else None
     ex = exercise(carb_units, correction) if exercise else None
     total = carb_units + correction + trend - active - (ex["units"] if ex else 0)
 
-    warning = None
+    warnings = []
+    cap = max_units(params)
     if glucose is not None and glucose < low:
-        warning = "You're below range: treat the low first, then dose for the meal once you're back up."
+        warnings.append(("belowLow", "You're below range: treat the low first, then dose for the meal once you're back up."))
+        total = 0.0
+    elif predicted is not None and predicted < low:
+        warnings.append(("headingLow", f"You're heading low (about {round(predicted)} in {LIMITS['lowLookahead']:g} min): "
+                        "don't take insulin now. Eat first and check again in 15 to 20 minutes before dosing."))
+        correction = trend = 0.0
         total = 0.0
     elif glucose is None:
-        warning = "No recent glucose reading, so there's no correction in this estimate."
+        warnings.append(("noGlucose", "No recent glucose reading, so there's no correction in this estimate."))
     total = max(0.0, math.floor(total * 2) / 2)
+    capped = total > cap
+    if capped:
+        warnings.append(("capped", f"Capped at {_fmt(cap)} u, the most one dose is suggested for (worked out {_fmt(total)} u). "
+                        "Check the carbs and take any more only if you're sure."))
+        total = cap
     return {
         "units": total,
         "carbUnits": round(carb_units, 1),
         "correctionUnits": round(correction, 1),
         "trendUnits": round(trend, 1),
+        "trendHeld": trend_held,
+        "predicted": round(predicted) if predicted is not None else None,
         "activeInsulin": round(iob, 1),
         "carbsOnBoard": round(cob),
         "activeDeducted": round(active, 1),
         "glucose": glucose,
         "target": target,
-        "warning": warning,
+        "maxUnits": cap,
+        "capped": capped,
+        "warning": " ".join(text for _, text in warnings) or None,
+        # The same warnings with what each is about, for apps to show them apart:
+        # belowLow, headingLow, noGlucose, capped (and missedLong from the server).
+        "alerts": [{"kind": kind, "text": text} for kind, text in warnings],
         "period": period,
         "periodCarbRatio": icr,
         "exercise": ex,
@@ -314,7 +505,7 @@ def meal_dose(meal_ts, meals, insulin, readings, low, high, now, params=None, fx
         "laterUnits": sum(e["units"] for e in later),
         "carbs": carbs,
         "sharedWith": len(group) - 1,
-        "suggested": round(carbs / params["byTime"][bucket(start)]["carbRatio"] * 2) / 2 if params and carbs else None,
+        "suggested": round(carbs / carb_ratio_at(params, start) * 2) / 2 if params and carbs else None,
         "verdict": None,
         "reason": None,
     }
@@ -338,10 +529,11 @@ def meal_dose(meal_ts, meals, insulin, readings, low, high, now, params=None, fx
     after = fx.adjust(raw, start)
     labels = fx.describe(start - 3600, horizon)
     exercise = labels[0] if len(labels) == 1 else "exercise"
-    dip = next(((ts, v) for ts, v in raw if v < low and ts >= start + 30 * 60), None)
+    # Only a low that lasts counts, not a single reading (a compression low, say).
+    dip = first_low(readings, low, start + 30 * 60, horizon + 1)
     if dip:
-        went = f"Went down to {dip[1]} at {datetime.fromtimestamp(dip[0]):%H:%M}"
-        if any(v < low for ts, v in after if ts >= start + 30 * 60):
+        went = f"Went down to {dip['mgdl']} at {localtime.at(dip['ts']):%H:%M}"
+        if first_low(fx.adjust(readings, start), low, start + 30 * 60, horizon + 1):
             out["verdict"] = "tooMuch"
             out["reason"] = went + (f", even allowing for the {exercise}" if after != raw else "")
         else:

@@ -1,7 +1,8 @@
 """Derived data: short-term forecast, meal impact and the weekly data digest."""
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import exercise
+import localtime
 
 FORECAST_WINDOW = 20 * 60   # seconds of history used for the trend
 FORECAST_MINUTES = 30
@@ -102,7 +103,7 @@ def _episodes(readings, test, min_minutes=15, tag=None):
             end = ts
         elif start:
             if end - start >= min_minutes * 60:
-                out.append({"start": datetime.fromtimestamp(start).strftime("%a %H:%M"),
+                out.append({"start": localtime.at(start).strftime("%a %H:%M"),
                             "minutes": round((end - start) / 60), "extreme": worst})
                 if tag and tag(start):
                     out[-1]["afterExercise"] = tag(start)
@@ -115,20 +116,20 @@ def weekly_digest(readings, prev_readings, events, meals, low, high, start, end,
     days = {}
     hours = {h: [] for h in range(24)}
     for ts, v in readings:
-        dt = datetime.fromtimestamp(ts)
+        dt = localtime.at(ts)
         days.setdefault(dt.strftime("%a %d %b"), []).append(v)
         hours[dt.hour].append(v)
 
     insulin = {}
     for e in events:
         if e["kind"] == "insulin":
-            day = datetime.fromtimestamp(e["ts"]).strftime("%a %d %b")
+            day = localtime.at(e["ts"]).strftime("%a %d %b")
             key = f"{e.get('insulinType') or 'rapid'}_units"
             insulin.setdefault(day, {}).setdefault(key, 0)
             insulin[day][key] += e.get("units") or 0
 
     return {
-        "period": f"{datetime.fromtimestamp(start):%a %d %b} to {datetime.fromtimestamp(end):%a %d %b %Y}",
+        "period": f"{localtime.at(start):%a %d %b} to {localtime.at(end):%a %d %b %Y}",
         "targetRange": [low, high],
         "week": _stats([v for _, v in readings], low, high),
         "previousWeek": _stats([v for _, v in prev_readings], low, high),
@@ -139,7 +140,7 @@ def weekly_digest(readings, prev_readings, events, meals, low, high, start, end,
         "highEpisodes": _episodes(readings, lambda v: v > 250, 30),
         "insulinByDay": insulin,
         "meals": [{
-            "when": datetime.fromtimestamp(m["ts"]).strftime("%a %H:%M"),
+            "when": localtime.at(m["ts"]).strftime("%a %H:%M"),
             "what": m.get("note") or "unnamed",
             "carbs": m.get("carbs"),
             "rise": (m.get("impact") or {}).get("rise"),

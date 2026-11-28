@@ -29,7 +29,7 @@ The server is a Python script (standard library only for glucose) and runs on an
 - Journal: every entry by day, editable and deletable (here and on the web page), with each meal's glucose curve and each exercise session's response, including lows in the 12 hours after
 - Exercise model: how much each kind of session lowers glucose, learned from your finished sessions (the drop beyond what logged carbs and insulin explain), plus insulin working harder for up to a day afterwards. Meal scores, dose verdicts and the learned ratios allow for it; after moderate or hard exercise, heading-low alerts come earlier for a few hours (also in the Windows tray)
 - Meal impact: a 0-100 food score from the first 90 minutes after eating, plus whether the rapid insulin around it was about right, too little or too much (judged from where glucose ended up, later correction doses and lows)
-- Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active, and less for exercise in progress, planned within 2 hours or done recently. When the meal has a description or photo estimate, Claude then compares it with the same food in your last 90 days of meals, however you worded it, and adjusts the dose for how those went (kept between half and 1.5× the formula's number). An estimate, not medical advice
+- Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active, and less for exercise in progress, planned within 2 hours or done recently. When the meal has a description or photo estimate, Claude then compares it with the same food in your last 90 days of meals, however you worded it, and adjusts the carb part of the dose for how those went (by at most half of it, and never more than 2 u up). Capped per dose, and no insulin when you're low or heading low (see [Dose safety limits](#dose-safety-limits)). An estimate, not medical advice
 - Weekly summary written by Claude every Sunday from 19:00, or on demand
 
 Meal estimates, the dose adjustment from past meals and weekly summaries use Claude by default, through the Claude Agent SDK on the subscription you're logged into with `claude` (no API key). They can use the Gemini API or any OpenAI-compatible API instead (Groq, a local Ollama model, …): see [AI providers](#ai-providers).
@@ -53,6 +53,20 @@ Installs come from the latest [GitHub release](https://github.com/dogfootruler-k
 To publish a release, add a `## v1.2.0` section to [CHANGELOG.md](CHANGELOG.md), commit, then tag: `git tag v1.2.0 && git push origin v1.2.0`. The release workflow builds the Mac app and the Android APK (signed with the key in the `ANDROID_*` repository secrets; a backup is in `~/.config/freestyle-bar/android-release.*` on the server), attaches them and uses that section as the release notes (it stops if the section is missing).
 
 To run your own changes on a Mac, `./install.sh --dev` builds the app and installs the server from the checkout; the updater leaves a dev install alone until you run `./install.sh` again.
+
+Tests run on every push and pull request (`.github/workflows/test.yml`), and again before a release is built. To run them locally:
+
+```bash
+python3 -m unittest discover -s server/tests
+```
+
+```bash
+cd app && swift test
+```
+
+```bash
+cd android && ./gradlew testDebugUnitTest
+```
 
 ## Running the server elsewhere
 The server needs Python 3 and nothing else for glucose. With Claude, meal estimates and weekly summaries also need the Claude Agent SDK and a `claude` login on that computer; the other [AI providers](#ai-providers) need only an API key. On Linux (on Windows, the same with `.venv\Scripts\python` and the config at `%USERPROFILE%\.config\freestyle-bar\config.json`):
@@ -81,6 +95,52 @@ Set under `"ai"` in `~/.config/freestyle-bar/config.json`, then restart the serv
 
 Optional keys for every provider: `"model"` (a name, or a list tried in order while the API is busy) and `"timeout"` in seconds (default 180; raise it for a local model on a small CPU). Busy answers (429 or 5xx) are retried twice before moving on to the next model.
 
+## Dose safety limits
+The dose suggestion follows these rules, with a warning in the app whenever one applies:
+- No insulin while below the low threshold, or while the forecast says glucose will be below it within `lowLookahead` minutes.
+- A rising trend adds nothing while carbs are still being absorbed, within `trendRecentMinutes` of a rapid dose, or while insulin is still active. A falling trend always lowers the dose.
+- No suggestion is ever more than `maxDoseFraction` of the average total daily dose, or more than `maxDoseUnits`.
+- The adjustment from past meals moves only the carb part of the dose: by at most half of it either way, and never more than `aiMaxIncrease` units up. The server log records each one.
+- Requests are refused for more than `maxCarbs` grams, a target outside 70–200 mg/dL or a low outside 50–200 mg/dL.
+- A low counts only once glucose has stayed below the low threshold for `lowMinMinutes` (two readings 15 minutes apart are enough). A single low reading, such as lying on the sensor gives (a compression low), isn't one. This applies when learning the ratios, judging past doses and learning from exercise.
+- The learned carb ratios stay between half and twice the 500/daily-dose rule, as the sensitivity already did.
+- The suggestion warns when no long-acting insulin has been logged for longer than usual (see below).
+
+The Mac and Android apps and the web page show these warnings under the suggested dose, most serious first: heading low and below range in red, a capped dose (also marked "(capped)" next to the number) and a missed long-acting dose in orange. The Windows tray shows a notification when no long-acting has been logged for longer than usual, at most every 6 hours. Older servers send only the plain warning, and the apps still show it.
+
+Change them under `"dosing"` in `config.json`, then restart the server. These are the defaults:
+
+```json
+"dosing": {"maxDoseFraction": 0.25, "maxDoseUnits": 15, "lowLookahead": 30, "trendRecentMinutes": 120, "aiMaxIncrease": 2, "maxCarbs": 300, "lowMinMinutes": 15, "learnMaxIob": 0.3}
+```
+
+## Insulin type and slow meals
+The insulin still active is worked out from a curve that peaks 75 minutes after a dose and lasts 6 hours (NovoRapid, Humalog, Apidra). Fiasp and Lyumjev act sooner: set `"insulin": {"rapid": "fiasp"}` in `config.json` (or `"lyumjev"`) for a peak at 55 minutes. You can also give `"peak"` and `"dia"` (duration) in minutes, for example `{"peak": 65, "dia": 300}`.
+
+Meals are counted as absorbing over 3 hours. One high in fat or protein can be logged as slow (`"slow": true` on the meal, or the *Slow meal* box on the web page), and its carbs are then counted as absorbing over 5 hours (`"slowMealMinutes"` under `"insulin"`). This affects the insulin-still-active deduction in later suggestions and what's learned from that meal. The dose suggested for the meal itself doesn't change.
+
+How the ratios are learned:
+- **Corrections** count only when no carbs are still absorbing, less than `learnMaxIob` (0.3 u) of earlier rapid insulin is still active, and nothing else is eaten or injected in the 3 hours after. Corrections after which glucose rose are kept as well as those after which it fell, so the sensitivity isn't biased towards the doses that worked.
+- **The daily dose** behind the 500 and 1800 rules is the median over fully logged days. It leaves out today, the partly covered first day of the 30-day history, and days with under half the usual total, when most doses probably weren't logged.
+- **Carb ratios by time of day** change gradually over an hour around 04:00, 11:00 and 16:00, so a meal at 10:59 and one at 11:00 get nearly the same ratio.
+
+## Long-acting insulin checks
+`GET /basal` checks the long-acting (basal) insulin from what's been logged. It only informs: no dose changes beyond the warning on the suggestion.
+- **Missed dose**: the last long-acting dose and how long ago it was. After `longMissedHours` with none logged, the dose suggestion carries a warning (only once long-acting has been logged before).
+- **Fasting drift**: how fast glucose rises or falls, in mg/dL per hour, during stretches of at least `fastingMinHours` with no logged carbs and no low for `fastingCarbHours` before, less than `fastingMaxIob` units of rapid insulin active, and no exercise for `exerciseClearHours`. Stretches are cut at midnight, and each day over the last `driftDays` gets one number. It's flagged when it's beyond ±`driftLimit` on at least `driftMinDays` days and on more than half of the days measured. Overnight rises also come from the dawn effect, and unlogged snacks look like a rise.
+- **Share of the daily dose**: long-acting as a share of all insulin, over past days with both kinds logged (at least `shareMinDays`), flagged outside `shareMin`–`shareMax`.
+
+The defaults, changed under `"basal"` in `config.json`:
+
+```json
+"basal": {"longMissedHours": 26, "fastingCarbHours": 4, "fastingMaxIob": 0.3, "fastingMinHours": 3, "exerciseClearHours": 6, "driftLimit": 15, "driftDays": 14, "driftMinDays": 3, "shareMin": 0.3, "shareMax": 0.6, "shareMinDays": 3}
+```
+
+## Time zone and web page targets
+The carb ratios by time of day, daily doses, today's stats, weekly summaries and times in messages use the server's own time zone. A server somewhere else than you, such as a cloud VM in UTC, should be given yours as an IANA name: `"timezone": "Asia/Seoul"` in `config.json` (on Windows this needs `pip install tzdata`). The server refuses to start with a name it doesn't know.
+
+The apps keep their own target range and dose target in their settings. The web page has no settings, so it uses `"targets"` from `config.json` (shown at `GET /settings`). These are the defaults: `"targets": {"low": 70, "high": 180, "doseTarget": 120}`.
+
 ## Other computers (Tailscale)
 One computer runs the server; others read from it over [Tailscale](https://tailscale.com), so nothing is exposed to the internet or the local network and there's one shared history and meal log.
 
@@ -105,8 +165,10 @@ If the short name doesn't resolve, use the full MagicDNS name (`glucose-work.<ta
 | `/events` | GET / POST meals, insulin and exercise; `PATCH` / `DELETE /events/<id>` |
 | `/meals?days=30` | meals with glucose impact and dose outcome |
 | `/exercise?days=30` | exercise with how glucose responded, during and in the 12 h after |
-| `/dose?carbs=50&target=120` | rapid-insulin suggestion and the learned ratios |
+| `/dose?carbs=50&target=120&slow=0` | rapid-insulin suggestion and the learned ratios, with its warnings in `alerts` |
 | `POST /dose/history` | the same, adjusted by Claude for how similar past meals went |
+| `/basal?low=70` | long-acting checks: last dose, fasting drift, share of the daily dose |
+| `/settings` | the target range and dose target the web page uses, and the time zone |
 | `/readings?start=&end=` | readings between two Unix times |
 | `/meals/estimate` | POST photo/text, returns a carb estimate |
 | `/summary`, `/summary/generate` | weekly summary |

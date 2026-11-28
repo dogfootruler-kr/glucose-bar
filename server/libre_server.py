@@ -8,14 +8,17 @@ keeps every reading in a local SQLite database and serves it over HTTP.
   GET /readings?start=&end=   readings between two Unix times
   GET /export.csv             every stored reading
   GET/POST /events            meals, insulin and exercise
-                              (POST {kind, timestamp?, carbs?, units?, insulinType?, activity?, minutes?, intensity?, note?, photo?})
+                              (POST {kind, timestamp?, carbs?, units?, insulinType?, activity?, minutes?, intensity?, note?, photo?,
+                               slow? or absorption? (minutes) for a meal})
   PATCH /events/<id>          change fields (same as POST; "removePhoto": true drops the photo)
   DELETE /events/<id>
   GET /photos/<id>            meal photo
   POST /meals/estimate        {photo?, mediaType?, text?} -> AI carb estimate
   GET /meals?days=30&high=180 meals with their glucose impact and how the insulin dose worked out
   GET /exercise?days=30&low=70 exercise with how glucose responded, during and in the 12 h after
-  GET /dose?carbs=50&target=120&low=70   rapid-insulin suggestion learned from the history
+  GET /dose?carbs=50&target=120&low=70&slow=0   rapid-insulin suggestion learned from the history
+  GET /basal?low=70           long-acting checks: last dose, fasting drift, share of the daily dose
+  GET /settings               the target range and dose target the web page uses (config "targets")
   POST /dose/history          {carbs, note?, description?, target?, low?, high?} -> the same, adjusted by the AI
                               for how similar meals went
   GET /summary, POST /summary/generate   weekly recap written by the AI
@@ -49,9 +52,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import ai
+import basal
 import dosing
 import exercise
 import insights
+import localtime
 
 CONFIG_PATH = os.path.expanduser("~/.config/freestyle-bar/config.json")
 DATA_DIR = os.path.expanduser("~/Library/Application Support/freestyle-bar")
@@ -94,10 +99,10 @@ def db():
     conn.execute("""CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL,
         carbs REAL, units REAL, insulin_type TEXT, note TEXT, photo TEXT, estimate TEXT,
-        activity TEXT, minutes REAL, intensity TEXT)""")
+        activity TEXT, minutes REAL, intensity TEXT, absorption REAL)""")
     columns = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
-    for col, kind in (("activity", "TEXT"), ("minutes", "REAL"), ("intensity", "TEXT")):
-        if col not in columns:  # databases from before exercise was logged
+    for col, kind in (("activity", "TEXT"), ("minutes", "REAL"), ("intensity", "TEXT"), ("absorption", "REAL")):
+        if col not in columns:  # databases from before exercise (or slow meals) were logged
             conn.execute(f"ALTER TABLE events ADD COLUMN {col} {kind}")
     conn.execute("""CREATE TABLE IF NOT EXISTS summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL,
@@ -122,6 +127,7 @@ def event_json(r):
         "id": r["id"], "ts": r["ts"], "timestamp": iso(r["ts"]), "kind": r["kind"],
         "carbs": r["carbs"], "units": r["units"], "insulinType": r["insulin_type"], "note": r["note"],
         "activity": r["activity"], "minutes": r["minutes"], "intensity": r["intensity"],
+        "absorption": r["absorption"], "slow": bool(r["absorption"] and r["absorption"] > dosing.CARB_MINUTES),
         # Photos left behind on another computer aren't offered (the row still names them).
         "photo": f"/photos/{r['id']}" if r["photo"] and os.path.exists(os.path.join(PHOTO_DIR, r["photo"])) else None,
         "estimate": json.loads(r["estimate"]) if r["estimate"] else None,
@@ -167,19 +173,31 @@ def add_event(body):
     ts = parse_time(body["timestamp"]) if body.get("timestamp") else int(time.time())
     if kind == "exercise":
         exercise.validate({**body, "ts": ts}, time.time())
+    absorption = absorption_of(body) if kind == "meal" else None
     with db() as conn:
         cur = conn.execute(
-            """INSERT INTO events (ts, kind, carbs, units, insulin_type, note, estimate, activity, minutes, intensity)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO events (ts, kind, carbs, units, insulin_type, note, estimate, activity, minutes, intensity, absorption)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ts, kind, body.get("carbs"), body.get("units"), body.get("insulinType"), (body.get("note") or "").strip() or None,
              json.dumps(body["estimate"]) if body.get("estimate") else None,
-             body.get("activity"), body.get("minutes"), body.get("intensity")))
+             body.get("activity"), body.get("minutes"), body.get("intensity"), absorption))
         eid = cur.lastrowid
         if body.get("photo"):
             save_photo(conn, eid, body)
         row = conn.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
     events_version += 1
     return event_json(row)
+
+
+def absorption_of(body):
+    """A meal's absorption time in minutes from a request: "slow": true for dosing.SLOW_MEAL_MINUTES, or
+    "absorption" in minutes (60 to 480); None (the usual 3 h) otherwise."""
+    if body.get("absorption") is not None:
+        value = body["absorption"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 60 <= value <= 480:
+            raise ValueError("absorption must be between 60 and 480 minutes")
+        return float(value)
+    return dosing.SLOW_MEAL_MINUTES if body.get("slow") else None
 
 
 EDITABLE = {"carbs": "carbs", "units": "units", "insulinType": "insulin_type", "note": "note",
@@ -200,6 +218,8 @@ def update_event(eid, body):
             sets["ts"] = parse_time(body["timestamp"])
         if "estimate" in body:
             sets["estimate"] = json.dumps(body["estimate"]) if body["estimate"] else None
+        if row["kind"] == "meal" and ("slow" in body or "absorption" in body):
+            sets["absorption"] = absorption_of(body)
         if row["kind"] == "exercise":
             exercise.validate({k: sets.get(col, row[col]) for k, col in
                                (("activity", "activity"), ("minutes", "minutes"), ("intensity", "intensity"), ("ts", "ts"))},
@@ -237,7 +257,7 @@ def fitted(low=70):
         readings = history(since)
         key = (readings[-1][0] if readings else None, events_version)
         if fit_cache.get(low, (None,))[0] != key:
-            fit_cache[low] = (key, exercise.fit(readings, events(since), low))
+            fit_cache[low] = (key, exercise.fit(readings, events(since), low, since))
         return fit_cache[low][1]
 
 
@@ -285,7 +305,10 @@ def exercise_with_impact(since_ts, low=70):
     return out
 
 
-def dose_suggestion(carbs, target, low):
+def dose_suggestion(carbs, target, low, slow=False):
+    """slow: the meal is slow to absorb (high fat or protein). The dose for it is the same, but its carbs are
+    counted as absorbing over dosing.SLOW_MEAL_MINUTES once it's logged with "slow" ("absorptionMinutes")."""
+    dosing.validate_request(carbs, target, low)
     params, fx = fitted(low)
     if not params:
         raise RuntimeError("Log your rapid and long-acting insulin for a day or two first.")
@@ -293,8 +316,42 @@ def dose_suggestion(carbs, target, low):
     recent = history(now - 30 * 60)
     glucose = recent[-1][1] if recent and recent[-1][0] >= now - 15 * 60 else None
     fc = insights.forecast(recent) if glucose is not None else None
-    return dosing.suggest(params, carbs, glucose, fc["slope"] if fc else None, events(now - 8 * 3600), now, target, low,
-                          exercise.dose_effect(fx, now))
+    s = dosing.suggest(params, carbs, glucose, fc["slope"] if fc else None, events(now - 8 * 3600), now, target, low,
+                       exercise.dose_effect(fx, now))
+    s["absorptionMinutes"] = dosing.SLOW_MEAL_MINUTES if slow else dosing.CARB_MINUTES
+    return with_long_acting(s, basal.missed(events(now - 30 * 86400, "insulin"), now))
+
+
+def with_long_acting(s, missed):
+    """The suggestion s with the last long-acting dose ("longActing") and a warning if it looks missed."""
+    s = {**s, "longActing": missed}
+    if missed and missed["warning"]:
+        s["alerts"] = s["alerts"] + [{"kind": "missedLong", "text": missed["warning"]}]
+        s["warning"] = " ".join(a["text"] for a in s["alerts"])
+    return s
+
+
+def basal_check(low=70):
+    now = int(time.time())
+    context = events(now - 30 * 86400)
+    readings = history(now - int(basal.LIMITS["driftDays"] * 86400) - 6 * 3600)
+    return basal.check(readings, context, low, now, exercise.sessions(context))
+
+
+# What the web page uses for the target range and dose target (the apps keep their own settings).
+TARGETS = {"low": 70, "high": 180, "doseTarget": 120}
+
+
+def configure_targets(cfg):
+    for key, value in (cfg or {}).items():
+        if key not in TARGETS:
+            raise ValueError(f'unknown "targets" setting "{key}" (known: {", ".join(TARGETS)})')
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f'"targets.{key}" must be a number in mg/dL')
+        TARGETS[key] = int(value)
+    if not 50 <= TARGETS["low"] < TARGETS["high"] <= 400:
+        raise ValueError('"targets": low must be at least 50 and below high, which is at most 400')
+    dosing.validate_request(0, TARGETS["doseTarget"], TARGETS["low"])
 
 
 def past_meal(m):
@@ -302,7 +359,7 @@ def past_meal(m):
     est, dose, impact = m["estimate"] or {}, m["dose"] or {}, m["impact"] or {}
     out = {
         "id": m["id"],
-        "when": f"{datetime.fromtimestamp(m['ts']):%a %d %b %H:%M}",
+        "when": f"{localtime.at(m['ts']):%a %d %b %H:%M}",
         "note": m["note"], "dish": est.get("description"), "items": [i["name"] for i in est.get("items", [])] or None,
         "carbs": m["carbs"], "insulin": dose.get("units"), "minutesFromMeal": dose.get("minutesFromMeal"),
         "laterUnits": dose.get("laterUnits"), "formulaToday": dose.get("suggested"),
@@ -315,11 +372,11 @@ def past_meal(m):
 def dose_from_history(body):
     """The formula's suggestion, then the AI's adjustment for how the same food went over the last 90 days.
 
-    The AI is kept between half and one and a half times the formula, and isn't asked when there's
+    The AI only moves the carb part of the dose (see ai_units), and isn't asked when there's
     nothing to match on, no past meal to compare with, or the formula says no insulin now.
     """
     carbs, low = float(body["carbs"]), int(body.get("low", 70))
-    s = dose_suggestion(carbs, int(body.get("target", 120)), low)
+    s = dose_suggestion(carbs, int(body.get("target", 120)), low, bool(body.get("slow")))
     note, description = (body.get("note") or "").strip(), (body.get("description") or "").strip()
     if not ai.available() or not (note or description) or s["units"] <= 0:
         return s
@@ -333,11 +390,25 @@ def dose_from_history(body):
         past)
     ids = {p["id"] for p in past}
     matches = [i for i in answer["matches"] if i in ids]
-    units = s["units"]
-    if matches:
-        units = math.floor(max(s["units"] / 2, min(s["units"] * 1.5, answer["units"])) * 2) / 2
+    units = ai_units(s, answer["units"]) if matches else s["units"]
+    log(f"AI dose: formula {s['units']} u (carb part {s['carbUnits']} u), AI proposed {answer['units']} u, "
+        f"used {units} u, matched meals {matches}: {answer['reason']}")
     return {**s, "units": units, "formulaUnits": s["units"],
             "history": {"units": units - s["units"], "reason": answer["reason"], "meals": len(matches)}}
+
+
+def ai_units(s, proposed):
+    """The formula's dose s with the AI's proposed total applied to the carb part only.
+
+    The change is kept within half the carb part either way (so the carb part stays between half and
+    one and a half times the formula's), an increase is never more than dosing.LIMITS["aiMaxIncrease"]
+    units, and the result never goes above the formula's cap. Correction, trend and active insulin stay
+    as the formula worked them out.
+    """
+    carb = max(0.0, s["carbUnits"])
+    change = max(-carb / 2, min(carb / 2, dosing.LIMITS["aiMaxIncrease"], proposed - s["units"]))
+    units = math.floor((s["units"] + change) * 2) / 2
+    return max(0.0, min(units, s.get("maxUnits", units)))
 
 
 def post_exercise():
@@ -365,7 +436,7 @@ def generate_summary(low=70, high=180):
     if not ai.available():
         raise RuntimeError(ai.unavailable_reason())
     with summary_lock:
-        start, end, prev_start = insights.week_bounds(datetime.now())
+        start, end, prev_start = insights.week_bounds(localtime.now())
         s, e, p = int(start.timestamp()), int(end.timestamp()), int(prev_start.timestamp())
         sessions = [x for x in exercise_with_impact(s, low) if x["ts"] <= e]
         digest = insights.weekly_digest(history(s, e), history(p, s), events(s), meals_with_impact(s, high, low), low, high, s, e,
@@ -384,9 +455,9 @@ def summary_scheduler():
     """Writes the weekly recap on Sunday from 19:00 local time, once per week."""
     while True:
         try:
-            now = datetime.now()
+            now = localtime.now()
             last = latest_summary()
-            last_created = datetime.fromisoformat(last["created"]).astimezone() if last else None
+            last_created = datetime.fromisoformat(last["created"]).astimezone(localtime.TZ) if last else None
             if now.weekday() == 6 and now.hour >= 19 and ai.available() and (
                     not last_created or last_created.date() != now.date()):
                 generate_summary()
@@ -617,8 +688,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(payload)
         elif path == "/stats":
             low, high = int(q.get("low", 70)), int(q.get("high", 180))
-            midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
-            week = datetime.now().astimezone() - timedelta(days=7)
+            midnight = localtime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            week = localtime.now() - timedelta(days=7)
             payload = {"today": stats(int(midnight.timestamp()), low, high),
                        "week": stats(int(week.timestamp()), low, high)}
             self._send(json.dumps(payload).encode(), "application/json")
@@ -629,7 +700,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/export.csv":
             lines = ["timestamp_utc,local_time,mg_dl,mmol_l"]
             for ts, m in history(0):
-                local = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                local = localtime.at(ts).strftime("%Y-%m-%d %H:%M:%S")
                 lines.append(f"{iso(ts)},{local},{m},{m / 18.0182:.1f}")
             self._send(("\n".join(lines) + "\n").encode(), "text/csv",
                        {"content-disposition": 'attachment; filename="glucose.csv"'})
@@ -654,9 +725,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/exercise":
             since = int(time.time() - float(q.get("days", 30)) * 86400)
             self._json(exercise_with_impact(since, int(q.get("low", 70))))
+        elif path == "/basal":
+            self._json(basal_check(int(q.get("low", TARGETS["low"]))))
+        elif path == "/settings":
+            self._json({"targets": TARGETS, "timezone": localtime.describe()})
         elif path == "/dose":
             try:
-                self._json(dose_suggestion(float(q.get("carbs", 0)), int(q.get("target", 120)), int(q.get("low", 70))))
+                self._json(dose_suggestion(float(q.get("carbs", 0)), int(q.get("target", 120)), int(q.get("low", 70)),
+                                           q.get("slow", "").lower() in ("1", "true")))
             except Exception as e:
                 self._json({"error": str(e)}, 400)
         elif path == "/summary":
@@ -723,6 +799,17 @@ def main():
     except ValueError as e:
         sys.exit(f"Config {CONFIG_PATH}: {e}")
     log(f"AI: {ai.describe()}")
+    try:
+        localtime.configure(cfg.get("timezone"))
+        dosing.configure_insulin(cfg.get("insulin"))
+        dosing.configure(cfg.get("dosing"))
+        basal.configure(cfg.get("basal"))
+        configure_targets(cfg.get("targets"))
+    except ValueError as e:
+        sys.exit(f"Config {CONFIG_PATH}: {e}")
+    log(f"Rapid insulin: peak {dosing.INSULIN_PEAK:g} min, lasts {dosing.INSULIN_DIA:g} min; "
+        f"slow meals over {dosing.SLOW_MEAL_MINUTES:g} min")
+    log(f"Time zone: {localtime.describe()}; dose limits: {dosing.LIMITS}; basal checks: {basal.LIMITS}; targets: {TARGETS}")
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db().close()
     client = LibreLinkUp(cfg["email"], cfg["password"], cfg.get("baseUrl"), cfg.get("version", "4.16.0"))

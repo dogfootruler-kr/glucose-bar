@@ -12,9 +12,9 @@ This is an estimate from self-logged data, not medical advice.
 """
 import bisect
 import math
-from datetime import datetime
 
 import dosing
+import localtime
 
 ACTIVITIES = ("walk", "run", "cycling", "strength", "swim", "sport", "other")
 INTENSITIES = ("light", "moderate", "hard")
@@ -150,7 +150,7 @@ class Effects(dosing.NoExercise):
 def _unexplained_drop(fx, meals, params, t0, t1, g0, g1):
     """How far glucose fell between t0 and t1 beyond what the carbs and insulin absorbed explain
     (with insulin working harder after earlier exercise), at the learned carb ratio and sensitivity."""
-    icr, isf = params["byTime"][dosing.bucket(t0)]["carbRatio"], params["sensitivity"]
+    icr, isf = dosing.carb_ratio_at(params, t0), params["sensitivity"]
     carbs = dosing._absorbed(meals, t0, t1, "carbs", dosing.carbs_absorbed)
     insulin = dosing._absorbed(fx.rapid, t0, t1, "units", lambda m: 1 - dosing.insulin_on_board(m))
     insulin += fx._extra_insulin(fx._relevant(t0, t1), t0, t1)
@@ -178,7 +178,8 @@ def learn(readings, events, params, low=70):
             continue
         if any(o is not e and o["ts"] < t1 and ends_at(o) + TAIL * 60 > t0 for o in exercises):
             continue
-        t1 = next((ts for ts, v in readings[dosing._lo(index, t0):dosing._lo(index, t1)] if v < low), t1)
+        lo = dosing.first_low(readings, low, t0, t1, index)
+        t1 = lo["start"] if lo else t1
         g0, g1 = dosing._reading_at(readings, index, t0), dosing._reading_at(readings, index, t1)
         shape = _shape(e, t1)
         if g0 is None or g1 is None or shape < 10:
@@ -192,23 +193,24 @@ def learn(readings, events, params, low=70):
     return model
 
 
-def fit(readings, events, low=70):
+def fit(readings, events, low=70, since=None):
     """(dosing params or None, Effects), with exercise allowed for in the dosing fit.
+    since: where the history starts (see dosing.fit).
 
     Two passes: the ratios are fitted with the rule-of-thumb exercise rates, the rates are learned
     with those ratios, then the ratios are fitted again with the learned rates.
     """
     exercises, rapid = sessions(events), dosing._rapid(events)
     model = default_model()
-    tdd = dosing.daily_insulin(events)
+    tdd = dosing.daily_insulin(events, since)
     if not exercises or not tdd:
-        params = dosing.fit(readings, events, low)
+        params = dosing.fit(readings, events, low, since=since)
         return params, Effects(exercises, model, params["sensitivity"] if params else ISF_REF, rapid)
-    first = dosing.fit(readings, events, low, Effects(exercises, model, 1800 / tdd, rapid))
+    first = dosing.fit(readings, events, low, Effects(exercises, model, 1800 / tdd, rapid), since)
     if not first:
         return None, Effects(exercises, model, ISF_REF, rapid)
     model = learn(readings, events, first, low)
-    params = dosing.fit(readings, events, low, Effects(exercises, model, first["sensitivity"], rapid))
+    params = dosing.fit(readings, events, low, Effects(exercises, model, first["sensitivity"], rapid), since)
     return params, Effects(exercises, model, params["sensitivity"], rapid)
 
 
@@ -226,7 +228,7 @@ def _timing(e, now):
 def when(e, now):
     """e.g. "in progress", "planned for 18:00", "ended 20 min ago"."""
     if e["ts"] > now:
-        return f"planned for {datetime.fromtimestamp(e['ts']):%H:%M}"
+        return f"planned for {localtime.at(e['ts']):%H:%M}"
     if ends_at(e) > now:
         return "in progress"
     minutes = round((now - ends_at(e)) / 60)
@@ -331,7 +333,7 @@ def digest(exercises):
         i = e.get("impact") or {}
         low_after = i.get("lowAfter")
         rows.append({
-            "when": datetime.fromtimestamp(e["ts"]).strftime("%a %H:%M"),
+            "when": localtime.at(e["ts"]).strftime("%a %H:%M"),
             "what": label(e),
             "note": e.get("note"),
             "glucoseChange": i.get("change"),

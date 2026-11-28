@@ -74,6 +74,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -537,13 +538,23 @@ private fun DoseSuggestionView(s: DoseSuggestion, carbs: Double, settings: Setti
                     Caption(if (s.meals < 3) "Mostly the usual rules for your ${formatUnits(s.dailyDose)} u a day, until more meals are logged"
                     else "Learned from ${s.meals} meals over ${s.days.roundToInt()} days")
                 }
-                Text("${formatUnits(s.units)} u", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text("${formatUnits(s.units)} u" + if (s.capped == true) " (capped)" else "",
+                    style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold,
+                    color = if (s.capped == true) Palette.high else Color.Unspecified)
             }
-            listOfNotNull(s.warning, s.exercise?.warning).forEach { warning ->
+            s.shownAlerts.forEach { alert ->
+                val color = when (alert.level) {
+                    DoseAlert.Level.Danger -> Palette.low
+                    DoseAlert.Level.Caution -> Palette.high
+                    DoseAlert.Level.Info -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
                 Row {
-                    Icon(Icons.Filled.Warning, null, Modifier.size(18.dp), tint = Palette.high)
+                    Icon(Icons.Filled.Warning, null, Modifier.size(18.dp), tint = color)
                     Spacer(Modifier.width(6.dp))
-                    Text(warning, color = Palette.high, style = MaterialTheme.typography.bodySmall)
+                    Column {
+                        alert.title?.let { Text(it, color = color, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold) }
+                        Text(alert.text, color = color, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
             when {

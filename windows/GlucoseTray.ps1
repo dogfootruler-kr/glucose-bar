@@ -118,6 +118,17 @@ function Update-Glucose {
     }
 }
 
+# Long-acting checks from the server (GET /basal, servers from v1.4): a reminder when none has been
+# logged for longer than usual, at most every 6 hours. Older servers don't have it, which is ignored.
+function Update-Basal {
+    try {
+        $basal = Invoke-RestMethod -Uri "$Server/basal?low=$($Config.alertLow)" -TimeoutSec 20
+    } catch { return }
+    if ($basal.missed -and $basal.missed.warning) {
+        Send-Alert 'missedLong' 'Long-acting insulin not logged' $basal.missed.warning 360
+    }
+}
+
 function Update-Self([switch]$Manual) {
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -159,6 +170,11 @@ $timer.Interval = 60000
 $timer.add_Tick({ Update-Glucose })
 $timer.Start()
 
+$basalTimer = New-Object System.Windows.Forms.Timer
+$basalTimer.Interval = 30 * 60 * 1000
+$basalTimer.add_Tick({ Update-Basal })
+$basalTimer.Start()
+
 # First update check a minute after starting, then every 6 hours.
 $updateTimer = New-Object System.Windows.Forms.Timer
 $updateTimer.Interval = 60000
@@ -166,5 +182,6 @@ $updateTimer.add_Tick({ $updateTimer.Interval = 6 * 3600 * 1000; Update-Self })
 $updateTimer.Start()
 
 Update-Glucose
+Update-Basal
 [System.Windows.Forms.Application]::Run()
 $Tray.Dispose()

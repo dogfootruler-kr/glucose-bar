@@ -22,6 +22,8 @@
   .arrow { font-size: 40px; }
   .muted { color: var(--muted); }
   .warn { color: var(--low); font-weight: 600; }
+  .warn.alert-2 { color: var(--low); } .warn.alert-1 { color: var(--high); } .warn.alert-0 { color: var(--muted, inherit); font-weight: 400; }
+  .capped { color: var(--high); }
   .seg { display: flex; gap: 6px; margin-bottom: 10px; }
   .seg button { flex: 1; border: 0; border-radius: 8px; padding: 6px; background: var(--grid); color: var(--fg); font: inherit; cursor: pointer; }
   .seg button.on { background: var(--line); color: #fff; }
@@ -123,6 +125,7 @@
       <div id="estimateResult" class="small muted"></div>
       <label for="carbs">Carbs (g)</label>
       <input id="carbs" type="number" inputmode="decimal" min="0">
+      <label class="check small" title="High in fat or protein (pizza, curry, a big steak): its carbs are counted as absorbing over 5 hours"><input type="checkbox" id="slow"> Slow meal (high fat or protein)</label>
       <div id="exNear" class="small muted" style="display:none; margin-top:10px"></div>
       <div id="doseBox" class="dose" style="display:none"></div>
       <label class="check" id="alsoDoseRow" style="display:none"><input type="checkbox" id="alsoDose"> Also log <input id="doseUnits" type="number" step="0.5" min="0" style="width:70px"> u rapid insulin</label>
@@ -174,7 +177,8 @@
   </div>
 </main>
 <script>
-const LOW = 70, HIGH = 180;
+// From config.json "targets" on the server (GET /settings); these until it answers.
+let LOW = 70, HIGH = 180, DOSE_TARGET = 120;
 const JSON_HEADERS = { 'content-type': 'application/json' };  // the server only accepts JSON POSTs
 let hours = 6, mealSort = 'recent', meals = [], entries = [], exercise = [], aiAvailable = false;
 let plotted = [], plottedEvents = [], scaleX = null, scaleY = null;
@@ -511,7 +515,7 @@ function resetForm() {
   photoData = null; lastEstimate = null; removePhoto = false; editing = null;
   $('preview').style.display = 'none'; $('estimateResult').textContent = '';
   $('logTitle').textContent = 'Log'; $('cancelEdit').style.display = 'none'; $('deleteEntry').style.display = 'none';
-  $('alsoDose').checked = false;
+  $('alsoDose').checked = false; $('slow').checked = false;
   document.querySelectorAll('[data-kind]').forEach(x => x.disabled = false);
   resetTime(); updateDose();
 }
@@ -524,7 +528,7 @@ function startEdit(e) {
   $('cancelEdit').style.display = ''; $('deleteEntry').style.display = '';
   setTime(e.timestamp);
   if (e.kind === 'meal') {
-    $('mealNote').value = e.note || ''; $('carbs').value = e.carbs ?? '';
+    $('mealNote').value = e.note || ''; $('carbs').value = e.carbs ?? ''; $('slow').checked = !!e.slow;
     if (e.photo) { $('preview').src = e.photo; $('preview').style.display = 'block'; }
   } else if (e.kind === 'exercise') {
     $('activity').value = e.activity || 'other'; $('minutes').value = e.minutes; $('intensity').value = e.intensity || 'moderate'; $('exNote').value = e.note || ''; showIntensityInfo();
@@ -544,6 +548,15 @@ async function deleteEntry(e) {
 $('deleteEntry').onclick = () => deleteEntry(editing);
 
 // Dose suggestion for a new meal eaten now
+// The suggestion's warnings, most serious first (servers before v1.4 send only "warning").
+const ALERT_TITLES = { belowLow: 'Below range', headingLow: 'Heading low', capped: 'Dose capped',
+                       missedLong: 'Long-acting not logged', noGlucose: 'No recent reading' };
+const ALERT_LEVELS = { belowLow: 2, headingLow: 2, capped: 1, missedLong: 1, exercise: 1, other: 1 };
+function doseAlerts(s) {
+  const list = (s.alerts || (s.warning ? [{ kind: 'other', text: s.warning }] : []))
+    .concat(s.exercise && s.exercise.warning ? [{ kind: 'exercise', text: s.exercise.warning }] : []);
+  return list.map(a => ({ ...a, level: ALERT_LEVELS[a.kind] ?? 0 })).sort((a, b) => b.level - a.level);
+}
 function updateDose() {
   clearTimeout(doseTimer);
   const seq = ++doseSeq;
@@ -567,8 +580,8 @@ function updateDose() {
     if (s.exercise) rows.push([s.exercise.label, -s.exercise.units]);
     if (s.history && s.history.units) rows.push([`How ${s.history.meals} similar ${s.history.meals === 1 ? 'meal' : 'meals'} went before`, s.history.units]);
     const basis = s.meals < 3 ? `Mostly the usual rules for your ${fmtU(s.dailyDose)} u a day, until more meals are logged` : `Learned from ${s.meals} meals over ${Math.round(s.days)} days`;
-    $('doseBox').innerHTML = `Suggested rapid insulin: <b>${fmtU(s.units)} u</b><div class="muted small">${basis}</div>`
-      + [s.warning, s.exercise && s.exercise.warning].filter(Boolean).map(w => `<div class="warn small">${esc(w)}</div>`).join('')
+    $('doseBox').innerHTML = `Suggested rapid insulin: <b${s.capped ? ' class="capped"' : ''}>${fmtU(s.units)} u${s.capped ? ' (capped)' : ''}</b><div class="muted small">${basis}</div>`
+      + doseAlerts(s).map(a => `<div class="warn small alert-${a.level}">${ALERT_TITLES[a.kind] ? `<b>${ALERT_TITLES[a.kind]}</b> ` : ''}${esc(a.text)}</div>`).join('')
       + (s.history ? `<div class="muted small">${esc(s.history.reason)}</div>` : extra ? `<div class="muted small">${esc(extra)}</div>` : '')
       + `<details><summary class="small">How it's worked out</summary><table>${rows.map(([l, v]) => `<tr><td class="muted">${esc(l)}</td><td>${u(v)}</td></tr>`).join('')}<tr><td class="muted">Rounded down to the nearest half unit</td><td><b style="font-size:13px">${fmtU(s.units)} u</b></td></tr></table></details>`
       + '<div class="muted small" style="margin-top:6px">An estimate from your own logs, not medical advice.</div>';
@@ -578,7 +591,7 @@ function updateDose() {
   doseTimer = setTimeout(async () => {
     let s;
     try {
-      const r = await fetch(`/dose?carbs=${carbs}&target=120&low=${LOW}`);
+      const r = await fetch(`/dose?carbs=${carbs}&target=${DOSE_TARGET}&low=${LOW}&slow=${$('slow').checked ? 1 : 0}`);
       s = await r.json();
       if (!r.ok) throw new Error(s.error);
     } catch (e) { $('doseBox').innerHTML = `<span class="muted small">${esc(e.message)}</span>`; $('doseBox').style.display = ''; return; }
@@ -589,7 +602,7 @@ function updateDose() {
     render(s, 'Checking how similar meals went…');
     try {
       const r = await fetch('/dose/history', { method: 'POST', headers: JSON_HEADERS,
-        body: JSON.stringify({ carbs, note: note || null, description, target: 120, low: LOW, high: HIGH }) });
+        body: JSON.stringify({ carbs, note: note || null, description, target: DOSE_TARGET, low: LOW, high: HIGH, slow: $('slow').checked }) });
       const h = await r.json();
       if (!r.ok) throw new Error(h.error);
       if (seq === doseSeq) render(h);
@@ -639,7 +652,8 @@ $('estimate').onclick = async () => {
 $('save').onclick = async () => {
   const body = { timestamp: new Date($('time').value).toISOString() };
   if (kind === 'meal') {
-    Object.assign(body, { note: $('mealNote').value.trim() || null, carbs: $('carbs').value ? Number($('carbs').value) : null });
+    Object.assign(body, { note: $('mealNote').value.trim() || null, carbs: $('carbs').value ? Number($('carbs').value) : null,
+                          slow: $('slow').checked });
     if (photoData) Object.assign(body, { photo: photoData, mediaType: 'image/jpeg' });
     if (lastEstimate) body.estimate = lastEstimate;
     if (!body.note && body.carbs == null && !photoData && !(editing && editing.photo)) { $('saveMsg').textContent = 'Add a photo, description or carbs.'; return; }
@@ -699,7 +713,13 @@ async function load() {
     document.title = 'Glucose';
   }
 }
-load();
+async function loadSettings() {
+  try {
+    const t = (await (await fetch('/settings')).json()).targets;
+    if (t) ({ low: LOW, high: HIGH, doseTarget: DOSE_TARGET } = t);
+  } catch (e) { /* older server: keep the defaults */ }
+}
+loadSettings().then(load);
 loadSummary();
 setInterval(load, 60000);
 </script>
