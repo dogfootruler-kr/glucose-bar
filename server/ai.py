@@ -286,7 +286,8 @@ none = no insulin logged) with its reason, and the glucose peak.
    formula assumes (insulin plus laterUnits for "tooLittle", less for "tooMuch", compared with formulaToday), and move
    the carb part of the dose by that much. The correction, trend and active insulin are already right for now; don't
    redo them. One meal is weak evidence: move only part of the way. Meals affected by exercise say little about the food.
-4. "units": the adjusted total, a multiple of 0.5, between half and one and a half times the formula's units.
+4. "units": the adjusted total, a multiple of 0.5. Only the carb part may move: by at most half of carbUnits either
+   way, and never more than 2 u up. The server enforces this and its own dose cap.
 5. "reason": one short sentence naming the past meals and what happened, e.g. "The last 3 times you had roast chicken
    with rice, 5 u ran high and you needed about 1.5 u more later." If nothing matched, say so in a few words."""
 

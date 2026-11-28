@@ -20,6 +20,49 @@ INSULIN_DIA = 360
 INSULIN_PEAK = 75
 MEAL_GROUP = 45 * 60      # meals this close together share one dose
 
+# Safety limits for suggestions; each can be set under "dosing" in config.json (see configure).
+LIMITS = {
+    "maxDoseFraction": 0.25,  # most one suggestion can be, as a share of the average total daily dose
+    "maxDoseUnits": 15.0,     # and never more than this, whatever the daily dose
+    "lowLookahead": 30,       # minutes ahead the forecast is checked for heading low
+    "trendRecentMinutes": 120,  # no upward trend added within this long of a rapid dose
+    "aiMaxIncrease": 2.0,     # most units the AI's food history can add to the formula's dose
+    "maxCarbs": 300,          # grams one suggestion can be asked for
+}
+
+
+def configure(cfg):
+    """Override LIMITS from config.json's "dosing" object. Unknown keys and non-positive values are refused."""
+    for key, value in (cfg or {}).items():
+        if key not in LIMITS:
+            raise ValueError(f'unknown "dosing" setting "{key}" (known: {", ".join(LIMITS)})')
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(f'"dosing.{key}" must be a positive number')
+        if key == "maxDoseFraction" and value > 1:
+            raise ValueError('"dosing.maxDoseFraction" must be at most 1')
+        LIMITS[key] = float(value)
+
+
+def validate_request(carbs, target, low):
+    """Refuses dose requests outside sensible ranges (ValueError)."""
+    for name, value in (("carbs", carbs), ("target", target), ("low", low)):
+        if value is None or not math.isfinite(value):
+            raise ValueError(f"{name} must be a number")
+    if not 0 <= carbs <= LIMITS["maxCarbs"]:
+        raise ValueError(f"carbs must be between 0 and {LIMITS['maxCarbs']:g} g")
+    if not 70 <= target <= 200:
+        raise ValueError("target must be between 70 and 200 mg/dL")
+    if not 50 <= low <= 200:
+        raise ValueError("low must be between 50 and 200 mg/dL")
+
+
+def max_units(params):
+    """The most one suggestion can be: a share of the average daily dose, never above the hard maximum."""
+    cap = LIMITS["maxDoseUnits"]
+    if params.get("dailyDose"):
+        cap = min(cap, LIMITS["maxDoseFraction"] * params["dailyDose"])
+    return math.floor(cap * 2) / 2
+
 
 class NoExercise:
     """What logged exercise did to glucose (exercise.Effects); this one stands for none."""
@@ -249,6 +292,12 @@ def suggest(params, carbs, glucose, slope, events, now, target=120, low=70, exer
     glucose: latest mg/dL (None if unknown); slope: mg/dL per minute from the forecast (None if unknown).
     Insulin still active is subtracted, minus what the carbs still being absorbed will need.
     exercise: optional function (carb units, correction units) -> {"units": less needed, ...} or None.
+
+    Safety rules (limits in LIMITS):
+    - below low now, or heading below it within lowLookahead minutes on the forecast: no insulin;
+    - a rising trend adds nothing while carbs are still being absorbed, within trendRecentMinutes of
+      a rapid dose, or while insulin is still active (it would undo that deduction); a falling one always counts;
+    - the result is never more than max_units(params).
     """
     period = bucket(now)
     icr, isf = params["byTime"][period]["carbRatio"], params["sensitivity"]
@@ -256,31 +305,53 @@ def suggest(params, carbs, glucose, slope, events, now, target=120, low=70, exer
     iob = sum(e["units"] * insulin_on_board((now - e["ts"]) / 60) for e in rapid if e["ts"] <= now)
     cob = sum(e["carbs"] * (1 - carbs_absorbed((now - e["ts"]) / 60)) for e in meals if e["ts"] <= now)
     active = max(0.0, iob - cob / icr)
+    recent_bolus = any(0 <= now - e["ts"] <= LIMITS["trendRecentMinutes"] * 60 for e in rapid)
 
     carb_units = carbs / icr
     correction = (glucose - target) / isf if glucose is not None else 0.0
     trend = max(-60, min(60, slope * 30)) / isf if slope is not None and glucose is not None else 0.0
+    # A rise while a meal is still going in or insulin is still working is what the COB and IOB above
+    # already account for; adding it again stacks insulin.
+    trend_held = trend > 0 and (cob >= 1 or recent_bolus or active > 0)
+    if trend_held:
+        trend = 0.0
+    predicted = glucose + slope * LIMITS["lowLookahead"] if slope is not None and glucose is not None else None
     ex = exercise(carb_units, correction) if exercise else None
     total = carb_units + correction + trend - active - (ex["units"] if ex else 0)
 
-    warning = None
+    warnings = []
+    cap = max_units(params)
     if glucose is not None and glucose < low:
-        warning = "You're below range: treat the low first, then dose for the meal once you're back up."
+        warnings.append("You're below range: treat the low first, then dose for the meal once you're back up.")
+        total = 0.0
+    elif predicted is not None and predicted < low:
+        warnings.append(f"You're heading low (about {round(predicted)} in {LIMITS['lowLookahead']:g} min): "
+                        "don't take insulin now. Eat first and check again in 15 to 20 minutes before dosing.")
+        correction = trend = 0.0
         total = 0.0
     elif glucose is None:
-        warning = "No recent glucose reading, so there's no correction in this estimate."
+        warnings.append("No recent glucose reading, so there's no correction in this estimate.")
     total = max(0.0, math.floor(total * 2) / 2)
+    capped = total > cap
+    if capped:
+        warnings.append(f"Capped at {_fmt(cap)} u, the most one dose is suggested for (worked out {_fmt(total)} u). "
+                        "Check the carbs and take any more only if you're sure.")
+        total = cap
     return {
         "units": total,
         "carbUnits": round(carb_units, 1),
         "correctionUnits": round(correction, 1),
         "trendUnits": round(trend, 1),
+        "trendHeld": trend_held,
+        "predicted": round(predicted) if predicted is not None else None,
         "activeInsulin": round(iob, 1),
         "carbsOnBoard": round(cob),
         "activeDeducted": round(active, 1),
         "glucose": glucose,
         "target": target,
-        "warning": warning,
+        "maxUnits": cap,
+        "capped": capped,
+        "warning": " ".join(warnings) or None,
         "period": period,
         "periodCarbRatio": icr,
         "exercise": ex,

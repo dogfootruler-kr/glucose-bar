@@ -286,6 +286,7 @@ def exercise_with_impact(since_ts, low=70):
 
 
 def dose_suggestion(carbs, target, low):
+    dosing.validate_request(carbs, target, low)
     params, fx = fitted(low)
     if not params:
         raise RuntimeError("Log your rapid and long-acting insulin for a day or two first.")
@@ -315,7 +316,7 @@ def past_meal(m):
 def dose_from_history(body):
     """The formula's suggestion, then the AI's adjustment for how the same food went over the last 90 days.
 
-    The AI is kept between half and one and a half times the formula, and isn't asked when there's
+    The AI only moves the carb part of the dose (see ai_units), and isn't asked when there's
     nothing to match on, no past meal to compare with, or the formula says no insulin now.
     """
     carbs, low = float(body["carbs"]), int(body.get("low", 70))
@@ -333,11 +334,25 @@ def dose_from_history(body):
         past)
     ids = {p["id"] for p in past}
     matches = [i for i in answer["matches"] if i in ids]
-    units = s["units"]
-    if matches:
-        units = math.floor(max(s["units"] / 2, min(s["units"] * 1.5, answer["units"])) * 2) / 2
+    units = ai_units(s, answer["units"]) if matches else s["units"]
+    log(f"AI dose: formula {s['units']} u (carb part {s['carbUnits']} u), AI proposed {answer['units']} u, "
+        f"used {units} u, matched meals {matches}: {answer['reason']}")
     return {**s, "units": units, "formulaUnits": s["units"],
             "history": {"units": units - s["units"], "reason": answer["reason"], "meals": len(matches)}}
+
+
+def ai_units(s, proposed):
+    """The formula's dose s with the AI's proposed total applied to the carb part only.
+
+    The change is kept within half the carb part either way (so the carb part stays between half and
+    one and a half times the formula's), an increase is never more than dosing.LIMITS["aiMaxIncrease"]
+    units, and the result never goes above the formula's cap. Correction, trend and active insulin stay
+    as the formula worked them out.
+    """
+    carb = max(0.0, s["carbUnits"])
+    change = max(-carb / 2, min(carb / 2, dosing.LIMITS["aiMaxIncrease"], proposed - s["units"]))
+    units = math.floor((s["units"] + change) * 2) / 2
+    return max(0.0, min(units, s.get("maxUnits", units)))
 
 
 def post_exercise():
@@ -723,6 +738,11 @@ def main():
     except ValueError as e:
         sys.exit(f"Config {CONFIG_PATH}: {e}")
     log(f"AI: {ai.describe()}")
+    try:
+        dosing.configure(cfg.get("dosing"))
+    except ValueError as e:
+        sys.exit(f"Config {CONFIG_PATH}: {e}")
+    log(f"Dose limits: {dosing.LIMITS}")
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db().close()
     client = LibreLinkUp(cfg["email"], cfg["password"], cfg.get("baseUrl"), cfg.get("version", "4.16.0"))

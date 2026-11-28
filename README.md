@@ -29,7 +29,7 @@ The server is a Python script (standard library only for glucose) and runs on an
 - Journal: every entry by day, editable and deletable (here and on the web page), with each meal's glucose curve and each exercise session's response, including lows in the 12 hours after
 - Exercise model: how much each kind of session lowers glucose, learned from your finished sessions (the drop beyond what logged carbs and insulin explain), plus insulin working harder for up to a day afterwards. Meal scores, dose verdicts and the learned ratios allow for it; after moderate or hard exercise, heading-low alerts come earlier for a few hours (also in the Windows tray)
 - Meal impact: a 0-100 food score from the first 90 minutes after eating, plus whether the rapid insulin around it was about right, too little or too much (judged from where glucose ended up, later correction doses and lows)
-- Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active, and less for exercise in progress, planned within 2 hours or done recently. When the meal has a description or photo estimate, Claude then compares it with the same food in your last 90 days of meals, however you worded it, and adjusts the dose for how those went (kept between half and 1.5× the formula's number). An estimate, not medical advice
+- Dose suggestion when logging a meal: carb ratio (by time of day) and correction factor learned from your logged meals, starting from the 500/1800 rules for your daily dose, minus insulin still active, and less for exercise in progress, planned within 2 hours or done recently. When the meal has a description or photo estimate, Claude then compares it with the same food in your last 90 days of meals, however you worded it, and adjusts the carb part of the dose for how those went (by at most half of it, and never more than 2 u up). Capped per dose, and no insulin when you're low or heading low (see [Dose safety limits](#dose-safety-limits)). An estimate, not medical advice
 - Weekly summary written by Claude every Sunday from 19:00, or on demand
 
 Meal estimates, the dose adjustment from past meals and weekly summaries use Claude by default, through the Claude Agent SDK on the subscription you're logged into with `claude` (no API key). They can use the Gemini API or any OpenAI-compatible API instead (Groq, a local Ollama model, …): see [AI providers](#ai-providers).
@@ -80,6 +80,20 @@ Set under `"ai"` in `~/.config/freestyle-bar/config.json`, then restart the serv
 | Off | `{"provider": "none"}` | Glucose, alerts, the journal, meal scores and the formula's dose suggestions all keep working |
 
 Optional keys for every provider: `"model"` (a name, or a list tried in order while the API is busy) and `"timeout"` in seconds (default 180; raise it for a local model on a small CPU). Busy answers (429 or 5xx) are retried twice before moving on to the next model.
+
+## Dose safety limits
+The dose suggestion follows these rules, with a warning in the app whenever one applies:
+- No insulin while below the low threshold, or while the forecast says glucose will be below it within `lowLookahead` minutes.
+- A rising trend adds nothing while carbs are still being absorbed, within `trendRecentMinutes` of a rapid dose, or while insulin is still active. A falling trend always lowers the dose.
+- No suggestion is ever more than `maxDoseFraction` of the average total daily dose, or more than `maxDoseUnits`.
+- The adjustment from past meals moves only the carb part of the dose: by at most half of it either way, and never more than `aiMaxIncrease` units up. The server log records each one.
+- Requests are refused for more than `maxCarbs` grams, a target outside 70–200 mg/dL or a low outside 50–200 mg/dL.
+
+Change them under `"dosing"` in `config.json`, then restart the server. These are the defaults:
+
+```json
+"dosing": {"maxDoseFraction": 0.25, "maxDoseUnits": 15, "lowLookahead": 30, "trendRecentMinutes": 120, "aiMaxIncrease": 2, "maxCarbs": 300}
+```
 
 ## Other computers (Tailscale)
 One computer runs the server; others read from it over [Tailscale](https://tailscale.com), so nothing is exposed to the internet or the local network and there's one shared history and meal log.
