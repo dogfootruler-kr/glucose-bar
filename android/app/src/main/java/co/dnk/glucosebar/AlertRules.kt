@@ -9,13 +9,14 @@ import kotlin.math.max
 
 /** The alert rules from the Mac app (Alerts.swift), kept free of Android so they can be unit tested. */
 enum class Condition {
-    Low, High, FastDrop, PredictedLow, Stale;
+    Low, High, FastDrop, PredictedLow, Stale, Correction;
 
     /** Lows break through Do Not Disturb; high and no-data alerts don't. */
     val urgent get() = this == Low || this == FastDrop || this == PredictedLow
 }
 
-data class Alert(val condition: Condition, val title: String, val body: String)
+/** repeat: how often to post it again while it lasts (null: the usual 20 minutes). */
+data class Alert(val condition: Condition, val title: String, val body: String, val repeat: Duration? = null)
 
 /** What's wrong right now. For a few hours after moderate or hard exercise, heading-low alerts come earlier. */
 fun activeAlerts(
@@ -27,6 +28,7 @@ fun activeAlerts(
     settings: Settings,
     now: Instant,
     zone: ZoneId = ZoneId.systemDefault(),
+    correction: CorrectionReminder? = null,
 ): List<Alert> {
     val raise = postExercise?.raise ?: 0
     val lowLimit = settings.alertLow + raise
@@ -60,6 +62,18 @@ fun activeAlerts(
                 add(Condition.PredictedLow, "Falling after exercise: $value", "Glucose is still dropping.$because")
             }
         }
+        // The server decides when a correction is worth suggesting (server/correction.py).
+        val c = correction
+        if (settings.alertCorrection && c != null && c.due && c.units != null && c.glucose != null && c.high != null && c.minutesHigh != null &&
+            Condition.Low !in active && Condition.FastDrop !in active && Condition.PredictedLow !in active) {
+            val units = formatUnits(c.units)
+            active[Condition.Correction] = Alert(
+                Condition.Correction, "Correction suggested: $units u",
+                "Glucose has been above ${settings.format(c.high)} for ${c.minutesHigh} min (now ${settings.format(c.glucose)}) and isn't coming down. " +
+                    "If you haven't taken insulin you didn't log, consider $units u. Check before dosing.",
+                Duration.ofMinutes((c.repeatMinutes ?: 120.0).toLong()),
+            )
+        }
     }
     return active.values.toList()
 }
@@ -76,7 +90,7 @@ class AlertThrottle(
         if (!enabled || snoozed) return emptyList()
         return active.filter { alert ->
             val last = lastNotified[alert.condition]
-            (last == null || Duration.between(last, now) > repeat).also { if (it) lastNotified[alert.condition] = now }
+            (last == null || Duration.between(last, now) > (alert.repeat ?: repeat)).also { if (it) lastNotified[alert.condition] = now }
         }
     }
 }

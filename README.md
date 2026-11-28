@@ -114,6 +114,22 @@ Change them under `"dosing"` in `config.json`, then restart the server. These ar
 "dosing": {"maxDoseFraction": 0.25, "maxDoseUnits": 15, "lowLookahead": 30, "trendRecentMinutes": 120, "aiMaxIncrease": 2, "maxCarbs": 300, "lowMinMinutes": 15, "learnMaxIob": 0.3}
 ```
 
+## Correction suggestions
+When glucose stays high and isn't coming down, the apps suggest a correction dose: a notification on the Mac, Android and Windows, and a line on the web page. The server decides, so every app follows the same rule. It suggests one only when all of these hold:
+- the latest reading is no more than 15 minutes old;
+- glucose has been above the top of your target range (the apps' own setting; `"targets"` for the web page and Windows) for at least `sustainedMinutes`, without a single reading back in range and with no gap of more than 20 minutes in the data;
+- it isn't falling faster than `fallingSlope` mg/dL a minute, and there's a trend to go on;
+- no rapid insulin has been logged in the last `rapidCooldownMinutes`, and no carbs are still digesting (a meal's rise is expected);
+- the correction worked out by the dose suggestion for no carbs is at least `minUnits`. That's after insulin still active is taken off, never more than the dose cap, and nothing when heading low (all the [dose safety limits](#dose-safety-limits) apply).
+
+It then reminds you again at most every `repeatMinutes` while it lasts. The message is a suggestion to check, never a dose to take blindly: for example, "Glucose has been above 180 for 40 min (now 250) and isn't coming down. If you haven't taken insulin you didn't log, consider 2.5 u. Check before dosing." It only knows about the insulin you've logged, so log every dose. Each app has a switch for it with its other alerts (`"correctionAlerts": false` in the Windows tray's settings). `GET /correction` (also `"correction"` in `/glucose`) says whether one is due and, if not, why not.
+
+The defaults, changed under `"correctionAlerts"` in `config.json` (`"enabled": false` turns it off for every app):
+
+```json
+"correctionAlerts": {"enabled": true, "sustainedMinutes": 30, "minUnits": 1, "rapidCooldownMinutes": 180, "repeatMinutes": 120, "fallingSlope": -0.5, "maxAgeMinutes": 15}
+```
+
 ## Insulin type and slow meals
 The insulin still active is worked out from a curve that peaks 75 minutes after a dose and lasts 6 hours (NovoRapid, Humalog, Apidra). Fiasp and Lyumjev act sooner: set `"insulin": {"rapid": "fiasp"}` in `config.json` (or `"lyumjev"`) for a peak at 55 minutes. You can also give `"peak"` and `"dia"` (duration) in minutes, for example `{"peak": 65, "dia": 300}`.
 
@@ -167,6 +183,7 @@ If the short name doesn't resolve, use the full MagicDNS name (`glucose-work.<ta
 | `/exercise?days=30` | exercise with how glucose responded, during and in the 12 h after |
 | `/dose?carbs=50&target=120&slow=0` | rapid-insulin suggestion and the learned ratios, with its warnings in `alerts` |
 | `POST /dose/history` | the same, adjusted by Claude for how similar past meals went |
+| `/correction?high=180&low=70&target=120` | whether a correction suggestion is due, and why not |
 | `/basal?low=70` | long-acting checks: last dose, fasting drift, share of the daily dose |
 | `/settings` | the target range and dose target the web page uses, and the time zone |
 | `/readings?start=&end=` | readings between two Unix times |

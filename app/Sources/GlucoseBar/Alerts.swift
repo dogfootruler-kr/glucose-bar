@@ -5,7 +5,7 @@ import UserNotifications
 /// For a few hours after moderate or hard exercise, heading-low alerts come earlier.
 @MainActor
 final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
-    enum Condition: String, CaseIterable { case low, high, fastDrop, predictedLow, stale }
+    enum Condition: String, CaseIterable { case low, high, fastDrop, predictedLow, stale, correction }
 
     @Published private(set) var snoozedUntil: Date?
     private var lastNotified: [Condition: Date] = [:]
@@ -39,7 +39,8 @@ final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDe
         defaults.removeObject(forKey: "snoozedUntil")
     }
 
-    func evaluate(reading: Reading?, forecast: Forecast?, postExercise: PostExercise?, stale: Bool, staleSince: Date) {
+    func evaluate(reading: Reading?, forecast: Forecast?, postExercise: PostExercise?, stale: Bool, staleSince: Date,
+                  correction: CorrectionReminder? = nil) {
         let mmol = defaults.bool(forKey: "useMmol")
         let raise = postExercise?.raise ?? 0
         let lowLimit = defaults.integer(forKey: "alertLow") + raise
@@ -71,12 +72,22 @@ final class AlertManager: NSObject, ObservableObject, UNUserNotificationCenterDe
             }
         }
 
+        // The server decides when a correction is worth suggesting (see server/correction.py).
+        if defaults.bool(forKey: "alertCorrection"), active[.low] == nil, active[.fastDrop] == nil, active[.predictedLow] == nil,
+           let message = correction?.message(mmol: defaults.bool(forKey: "useMmol")) {
+            active[.correction] = message
+        }
+
         for c in Condition.allCases where active[c] == nil { lastNotified[c] = nil }
         guard defaults.bool(forKey: "alertsEnabled"), !isSnoozed else { return }
-        for (c, (title, body)) in active where Date().timeIntervalSince(lastNotified[c] ?? .distantPast) > repeatInterval {
+        for (c, (title, body)) in active where Date().timeIntervalSince(lastNotified[c] ?? .distantPast) > interval(c, correction) {
             lastNotified[c] = Date()
             post(id: c.rawValue, title: title, body: body)
         }
+    }
+
+    private func interval(_ c: Condition, _ correction: CorrectionReminder?) -> TimeInterval {
+        c == .correction ? (correction?.repeatMinutes ?? 120) * 60 : repeatInterval
     }
 
     func sendTest() {

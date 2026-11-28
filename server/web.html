@@ -96,6 +96,7 @@
     <div class="now"><span class="value" id="value">–</span><span class="arrow" id="arrow"></span><span class="muted" id="delta"></span></div>
     <div class="muted" id="when">Loading…</div>
     <div id="forecast" class="small"></div>
+    <div id="correction" class="warn small alert-1" style="display:none; margin-top:6px"></div>
     <div id="insulin" class="small muted"></div>
     <div id="exercise" class="small muted"></div>
     <div id="postEx" class="small muted"></div>
@@ -557,6 +558,14 @@ function doseAlerts(s) {
     .concat(s.exercise && s.exercise.warning ? [{ kind: 'exercise', text: s.exercise.warning }] : []);
   return list.map(a => ({ ...a, level: ALERT_LEVELS[a.kind] ?? 0 })).sort((a, b) => b.level - a.level);
 }
+// The server's suggestion to correct after a sustained high (servers from v1.5); only ever a suggestion.
+function renderCorrection(c) {
+  const el = $('correction');
+  if (!c || !c.due) { el.style.display = 'none'; return; }
+  el.innerHTML = `<b>Correction suggested: ${fmtU(c.units)} u.</b> Glucose has been above ${c.high} for ${c.minutesHigh} min `
+    + `(now ${c.glucose}) and isn't coming down. If you haven't taken insulin you didn't log, consider ${fmtU(c.units)} u. Check before dosing.`;
+  el.style.display = '';
+}
 function updateDose() {
   clearTimeout(doseTimer);
   const seq = ++doseSeq;
@@ -685,7 +694,7 @@ $('save').onclick = async () => {
 async function load() {
   [...seg.children].forEach(b => b.classList.toggle('on', b.textContent === hours + 'h'));
   try {
-    const g = await (await fetch(`/glucose?hours=${hours}`)).json();
+    const g = await (await fetch(`/glucose?hours=${hours}&high=${HIGH}&low=${LOW}&target=${DOSE_TARGET}`)).json();
     const r = g.reading;
     if (r) {
       const el = $('value');
@@ -697,6 +706,7 @@ async function load() {
       document.title = mins > 20 ? `${r.mgdl} · ${mins} min ago` : `${r.mgdl} ${r.arrow} · Glucose`;
     }
     renderForecast(g.forecast, g.postExercise);
+    renderCorrection(g.correction);
     renderInsulin(await (await fetch('/events?hours=24')).json());
     draw(g.history, g.forecast, g.events || []);
     $('estimate').disabled = !g.aiAvailable;

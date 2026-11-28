@@ -48,7 +48,7 @@ final class GlucoseStore: ObservableObject {
     func refresh() async {
         do {
             let hours = max(defaults.integer(forKey: "chartHours"), 3)
-            state = try await get("/glucose?hours=\(hours)")
+            state = try await get("/glucose?hours=\(hours)&high=\(targetHigh)&low=\(targetLow)&target=\(defaults.integer(forKey: "doseTarget"))")
             stats = try await get("/stats?low=\(targetLow)&high=\(targetHigh)")
             meals = try await get("/meals?days=30&low=\(targetLow)&high=\(targetHigh)")
             entries = try await get("/events?hours=720")
@@ -60,7 +60,8 @@ final class GlucoseStore: ObservableObject {
         } catch {
             fetchError = "Server unreachable"
         }
-        alerts.evaluate(reading: reading, forecast: state?.forecast, postExercise: postExercise, stale: isStale, staleSince: staleSince)
+        alerts.evaluate(reading: reading, forecast: state?.forecast, postExercise: postExercise, stale: isStale, staleSince: staleSince,
+                        correction: isStale ? nil : state?.correction)
     }
 
     func refreshSummary() async {

@@ -108,6 +108,7 @@ object Alerts {
         val now = Instant.now()
         val active = activeAlerts(
             data.reading, data.state?.forecast, data.postExercise, data.isStale(settings, now), data.staleSince, settings, now,
+            correction = data.state?.correction,
         )
         for (alert in throttle.due(active, now, settings.alertsEnabled, isSnoozed)) {
             post(context, alert.condition.ordinal + 100, alert.title, alert.body, urgent = alert.condition.urgent)

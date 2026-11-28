@@ -3,7 +3,7 @@
 keeps every reading in a local SQLite database and serves it over HTTP.
 
   GET /                       live web page
-  GET /glucose?hours=12       latest reading, delta, sensor info and history
+  GET /glucose?hours=12&high=&low=&target=   latest reading, delta, sensor info, history and "correction"
   GET /stats?low=70&high=180  time in range, average and A1c estimate (today / 7 days)
   GET /readings?start=&end=   readings between two Unix times
   GET /export.csv             every stored reading
@@ -17,6 +17,7 @@ keeps every reading in a local SQLite database and serves it over HTTP.
   GET /meals?days=30&high=180 meals with their glucose impact and how the insulin dose worked out
   GET /exercise?days=30&low=70 exercise with how glucose responded, during and in the 12 h after
   GET /dose?carbs=50&target=120&low=70&slow=0   rapid-insulin suggestion learned from the history
+  GET /correction?high=180&low=70&target=120   whether to remind about a correction dose (also in /glucose)
   GET /basal?low=70           long-acting checks: last dose, fasting drift, share of the daily dose
   GET /settings               the target range and dose target the web page uses (config "targets")
   POST /dose/history          {carbs, note?, description?, target?, low?, high?} -> the same, adjusted by the AI
@@ -53,6 +54,7 @@ from urllib.parse import parse_qs, urlparse
 
 import ai
 import basal
+import correction
 import dosing
 import exercise
 import insights
@@ -329,6 +331,37 @@ def with_long_acting(s, missed):
         s["alerts"] = s["alerts"] + [{"kind": "missedLong", "text": missed["warning"]}]
         s["warning"] = " ".join(a["text"] for a in s["alerts"])
     return s
+
+
+def correction_status(high=None, low=None, target=None):
+    """Whether to remind about a correction dose now (see correction.py), for the apps' own range.
+    Never raises: a problem only means no reminder."""
+    high = high or TARGETS["high"]
+    low = low or TARGETS["low"]
+    target = target or TARGETS["doseTarget"]
+    try:
+        now = int(time.time())
+        readings = history(now - 6 * 3600)
+        fc = insights.forecast([r for r in readings if r[0] >= now - 30 * 60])
+        slope = fc["slope"] if fc and fc["fromTs"] >= now - 10 * 60 else None
+
+        def suggest():
+            try:
+                return dose_suggestion(0, target, low)
+            except RuntimeError:  # no insulin logged yet, so no ratios to work from
+                return None
+        return correction.check(readings, slope, events(now - 8 * 3600), now, high, suggest)
+    except Exception as e:
+        log(f"correction check error: {e}")
+        return {"due": False, "reason": "error"}
+
+
+def _int(q, key):
+    """An optional whole-number query parameter (None if missing or not a number)."""
+    try:
+        return int(float(q[key])) if q.get(key) else None
+    except ValueError:
+        return None
 
 
 def basal_check(low=70):
@@ -684,6 +717,7 @@ class Handler(BaseHTTPRequestHandler):
             payload["forecast"] = fc
             payload["events"] = events(since)
             payload["postExercise"] = post_exercise()
+            payload["correction"] = correction_status(_int(q, "high"), _int(q, "low"), _int(q, "target"))
             payload["aiAvailable"] = ai.available()
             self._json(payload)
         elif path == "/stats":
@@ -725,6 +759,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/exercise":
             since = int(time.time() - float(q.get("days", 30)) * 86400)
             self._json(exercise_with_impact(since, int(q.get("low", 70))))
+        elif path == "/correction":
+            self._json(correction_status(_int(q, "high"), _int(q, "low"), _int(q, "target")))
         elif path == "/basal":
             self._json(basal_check(int(q.get("low", TARGETS["low"]))))
         elif path == "/settings":
@@ -805,11 +841,12 @@ def main():
         dosing.configure(cfg.get("dosing"))
         basal.configure(cfg.get("basal"))
         configure_targets(cfg.get("targets"))
+        correction.configure(cfg.get("correctionAlerts"))
     except ValueError as e:
         sys.exit(f"Config {CONFIG_PATH}: {e}")
     log(f"Rapid insulin: peak {dosing.INSULIN_PEAK:g} min, lasts {dosing.INSULIN_DIA:g} min; "
         f"slow meals over {dosing.SLOW_MEAL_MINUTES:g} min")
-    log(f"Time zone: {localtime.describe()}; dose limits: {dosing.LIMITS}; basal checks: {basal.LIMITS}; targets: {TARGETS}")
+    log(f"Time zone: {localtime.describe()}; dose limits: {dosing.LIMITS}; basal checks: {basal.LIMITS}; targets: {TARGETS}; correction reminders: {correction.LIMITS}")
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db().close()
     client = LibreLinkUp(cfg["email"], cfg["password"], cfg.get("baseUrl"), cfg.get("version", "4.16.0"))

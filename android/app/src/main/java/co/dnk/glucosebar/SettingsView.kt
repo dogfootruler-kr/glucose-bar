@@ -98,7 +98,10 @@ fun SettingsView(nav: Nav) {
                 GlucoseStepper("High alert at or above", s.alertHigh, 150..400, s) { v -> set { it.copy(alertHigh = v) } }
                 Toggle("Dropping fast below ${s.format(100)}", s.alertFastDrop) { v -> set { it.copy(alertFastDrop = v) } }
                 Toggle("Heading low within 20 minutes", s.alertPredictedLow) { v -> set { it.copy(alertPredictedLow = v) } }
-                Caption("For 4 to 6 hours after moderate or hard exercise (2 hours more after 90 minutes or longer), heading-low and dropping-fast alerts come earlier.")
+                Toggle("Suggest a correction when high and not coming down", s.alertCorrection) { v -> set { it.copy(alertCorrection = v) } }
+                Caption("For 4 to 6 hours after moderate or hard exercise (2 hours more after 90 minutes or longer), heading-low and dropping-fast alerts come earlier. " +
+                    "Correction suggestions come after 30 minutes above your target range while glucose isn't falling, with no rapid insulin in the last 3 hours " +
+                    "and no carbs still digesting, at most every 2 hours; the dose allows for insulin still active and is never more than the dose cap.")
                 Stepper("No data for", "${s.staleMinutes} min",
                     { set { it.copy(staleMinutes = maxOf(10, it.staleMinutes - 5)) } },
                     { set { it.copy(staleMinutes = minOf(60, it.staleMinutes + 5)) } })
